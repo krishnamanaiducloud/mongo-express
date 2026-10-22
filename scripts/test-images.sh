@@ -29,9 +29,18 @@ trap cleanup EXIT
 docker network create "$NET" >/dev/null
 docker run -d --label "me-test=$$" --name "me-mongo-$$" --network "$NET" --network-alias mongo \
   -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$PW" "$MONGO_IMAGE" --wiredTigerCacheSizeGB 0.25 >/dev/null
-for _ in $(seq 1 60); do docker exec "me-mongo-$$" mongosh --quiet -u root -p "$PW" --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1 && break; sleep 1; done
-docker exec "me-mongo-$$" mongosh --quiet -u root -p "$PW" --eval '
-  db.getSiblingDB("app").orders.insertMany(Array.from({ length: 30 }, (_, n) => ({ n, sku: "S" + n })))' >/dev/null
+# The mongo image runs a temporary mongod to create the root user and then
+# restarts it, so wait for the init marker before seeding, and retry the seed.
+for _ in $(seq 1 120); do docker logs "me-mongo-$$" 2>&1 | grep -q 'MongoDB init process complete' && break; sleep 1; done
+seeded=""
+for _ in $(seq 1 60); do
+  if docker exec "me-mongo-$$" mongosh --quiet -u root -p "$PW" --eval '
+       const o = db.getSiblingDB("app").orders; o.deleteMany({});
+       o.insertMany(Array.from({ length: 30 }, (_, n) => ({ n, sku: "S" + n })));
+       if (o.countDocuments() !== 30) quit(1)' >/dev/null 2>&1; then seeded=1; break; fi
+  sleep 1
+done
+[ -n "$seeded" ] || { echo "test MongoDB could not be seeded"; docker logs --tail 20 "me-mongo-$$"; exit 2; }
 
 # Self-signed certificate for the HTTPS mode test (generated in a throwaway container).
 docker run --rm -u "$(id -u):$(id -g)" -v "$WORK:/out" --entrypoint sh cgr.dev/chainguard/wolfi-base:latest -c \
