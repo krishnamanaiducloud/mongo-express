@@ -17,13 +17,13 @@ configMapGenerator:
       - config.yaml
 
 # Production images are pinned by immutable digest (updated by the release
-# pipeline). Current: mongo-portal 0.1.0 (commit b8f25d2) and
+# pipeline). Current: mongo-portal 0.2.0 (commit 266c53b) and
 # origin-oauth-proxy 4.18 (amd64 only; use the Red Hat ose-oauth-proxy image
 # from your mirror for supported/arm64 production clusters).
 images:
   - name: docker.io/mohankrishna999/mongo-express
     newName: docker.io/mohankrishna999/mongo-express
-    digest: sha256:7592c5d020168ffc2c11f5a49d6efc51f3d94901e9b4de1aab1ef52adc978918
+    digest: sha256:7422334b3057a7852746a134ac86c30bf10a44e2b53e0e4336c8850b66ba3059
   - name: quay.io/openshift/origin-oauth-proxy
     newName: quay.io/openshift/origin-oauth-proxy
     digest: sha256:63b0344b903162519efdb63052c1dde81aa17cfc46ba63cc87300db47f0fb5df

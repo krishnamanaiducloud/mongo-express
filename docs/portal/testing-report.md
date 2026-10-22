@@ -22,6 +22,17 @@ e2e; runtime moved into a worker); the TypeScript-based autocompleter did not
 work in the browser and added ~11 MB (browser e2e; classic completer selected
 and the module stubbed, bundle 13.5 MB → 2.5 MB).
 
+Published from commit `266c53b1e8ef370137d6168c6025d5e881f6f16e` (clean
+`git archive`, multi-arch, SBOM + `mode=max` provenance; existing tags not
+overwritten, `latest` unchanged):
+
+| Image | Index digest | Post-publish verification |
+| --- | --- | --- |
+| `docker.io/mohankrishna999/mongo-express:0.2.0` | `sha256:7422334b3057a7852746a134ac86c30bf10a44e2b53e0e4336c8850b66ba3059` | provenance commit = 266c53b (amd64, arm64); arm64 binary aarch64; pulled image reports 0.2.0 (266c53b) go1.27.3; smoke 73/73 and browser e2e PASS run against the published image; Trivy by digest: 1 Unknown |
+| `docker.io/mohankrishna999/mongo-express:0.2.0-debug` | `sha256:3c45857f331c12ccaf23a0d53e189f4518b32df561c9999135ef2b9e1c93f68b` | labels + provenance = 266c53b; mongosh 2.13.0 runs as arbitrary UID; Trivy by digest: 1 Unknown |
+
+The prod overlay pins `0.2.0` by digest; dev uses `0.2.0-debug`, test `0.2.0`.
+
 Known limitations of the shell: no connections to other deployments,
 `db.auth()`, sessions/transactions, change streams, client-side encryption,
 `load()`, legacy Bulk API; `dropDatabase` off by default. Sessions remain

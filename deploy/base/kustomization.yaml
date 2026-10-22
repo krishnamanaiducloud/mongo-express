@@ -23,7 +23,7 @@ labels:
 images:
   - name: mongo-portal
     newName: docker.io/mohankrishna999/mongo-express
-    newTag: 0.1.0
+    newTag: 0.2.0
   # Community build of the OpenShift OAuth proxy. Production overlays should
   # use the Red Hat supported image (registry.redhat.io/openshift4/ose-oauth-proxy-rhel9)
   # or the cluster's mirrored copy, pinned by digest.
