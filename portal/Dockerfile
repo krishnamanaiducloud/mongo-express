@@ -53,8 +53,9 @@ ARG TARGETARCH
 SHELL ["/bin/sh", "-o", "pipefail", "-c"]
 # Wolfi is a rolling distribution: package versions are fixed by the
 # digest-pinned base image's repository snapshot at build time and recorded
-# in the image's apk database and SBOM.
-# hadolint ignore=DL3018
+# in the image's apk database and SBOM. SHELL above enables pipefail
+# (busybox sh supports it; hadolint only recognises bash/ash for DL4006).
+# hadolint ignore=DL3018,DL4006
 RUN set -eu; \
     case "${TARGETARCH}" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; *) echo "unsupported ${TARGETARCH}"; exit 1 ;; esac; \
     mkdir -p /rootfs; \
@@ -86,8 +87,8 @@ ARG MONGOSH_SHA256_AMD64=b2089e67641a28aa621476c4d62c69f66b9a41484baba24d8a8b1f5
 ARG MONGOSH_SHA256_ARM64=a124ec6680c70ceabc61696bbd110f0da05d7c52524ed402ae9511b5aec7fe32
 SHELL ["/bin/sh", "-o", "pipefail", "-c"]
 # curl is only used in this throwaway download stage; the artifact is
-# verified against the pinned SHA-256 above.
-# hadolint ignore=DL3018
+# verified against the pinned SHA-256 above. pipefail is set via SHELL.
+# hadolint ignore=DL3018,DL4006
 RUN set -eu; \
     case "${TARGETARCH}" in \
       amd64) a=x64; sum="${MONGOSH_SHA256_AMD64}" ;; \
