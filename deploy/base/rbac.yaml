@@ -1,0 +1,28 @@
+# Read access to exactly the OpenShift Group objects that grant portal roles.
+# The portal uses this to verify group membership server-side; it cannot list
+# other groups or users. Overlays MUST replace resourceNames with the real
+# group names and give the cluster-scoped objects an environment-unique name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mongo-portal-group-reader
+rules:
+  - apiGroups: ["user.openshift.io"]
+    resources: ["groups"]
+    verbs: ["get"]
+    resourceNames:
+      - REPLACE-developer-group
+      - REPLACE-sre-group
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mongo-portal-group-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mongo-portal-group-reader
+subjects:
+  - kind: ServiceAccount
+    name: mongo-portal
+    namespace: REPLACE-namespace

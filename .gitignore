@@ -109,3 +109,25 @@ cypress/screenshots
 # nyc test coverage
 # =========
 .nyc_output/
+
+# MongoDB portal
+# ===========
+# The portal web UI is built with npm; its lockfile is required for npm ci.
+!portal/web/package-lock.json
+portal/web/dist/
+portal/reports/
+portal/coverage.out
+portal/internal/webui/dist/*
+!portal/internal/webui/dist/index.html
+*.spdx.json
+*.cdx.json
+
+# Local AI assistant / agent files (never committed)
+# ===========
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.claude/
+.codex/
+.cursor/
+.aider*

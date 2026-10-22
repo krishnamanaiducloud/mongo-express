@@ -1,0 +1,179 @@
+/* Portal-specific styles. Colours use PatternFly tokens so both themes work. */
+
+.portal-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 1.125rem;
+  color: var(--pf-t--global--text--color--regular);
+}
+
+.portal-mono,
+.ejson {
+  font-family: var(--pf-t--global--font--family--mono);
+  font-size: var(--pf-t--global--font--size--sm);
+}
+
+.portal-banner {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.5rem 1.5rem;
+  background: var(--pf-t--global--color--status--danger--default);
+  color: var(--pf-t--global--text--color--status--on-danger--default, #fff);
+  font-weight: 600;
+}
+
+.portal-login {
+  min-height: 100vh;
+  padding: 2rem 1rem;
+  background: var(--pf-t--global--background--color--secondary--default);
+}
+
+.portal-login-card {
+  width: min(760px, 100%);
+}
+
+.portal-doc .pf-v6-c-card__title {
+  overflow-wrap: anywhere;
+}
+
+/* Extended JSON tree */
+.ejson-list {
+  list-style: none;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.ejson > .ejson-list {
+  padding-left: 0.25rem;
+}
+
+.ejson-row {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.ejson-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: 1.25rem;
+  margin-left: -1.25rem;
+  padding: 0;
+  color: var(--pf-t--global--text--color--subtle);
+  font: inherit;
+}
+
+.ejson-toggle:focus-visible,
+.ejson-more:focus-visible {
+  outline: 2px solid var(--pf-t--global--border--color--clicked);
+  outline-offset: 1px;
+}
+
+.ejson-more {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--pf-t--global--text--color--link--default);
+  font: inherit;
+  padding: 0;
+}
+
+.ejson-key {
+  color: var(--pf-t--global--text--color--regular);
+  font-weight: 600;
+}
+
+.ejson-colon,
+.ejson-summary,
+.ejson-null {
+  color: var(--pf-t--global--text--color--subtle);
+}
+
+.ejson-string {
+  color: var(--pf-t--global--color--status--success--default);
+}
+
+.ejson-number,
+.ejson-int,
+.ejson-long,
+.ejson-double,
+.ejson-decimal {
+  color: var(--pf-t--global--color--status--info--default);
+}
+
+.ejson-bool {
+  color: var(--pf-t--global--color--status--warning--default);
+}
+
+.ejson-objectId,
+.ejson-uuid {
+  color: var(--pf-t--global--color--nonstatus--purple--default, #5e40be);
+}
+
+.ejson-date,
+.ejson-timestamp {
+  color: var(--pf-t--global--color--nonstatus--teal--default, #37a3a3);
+}
+
+.ejson-binary,
+.ejson-regex,
+.ejson-code {
+  color: var(--pf-t--global--color--nonstatus--orange--default, #ca6c0f);
+}
+
+/* Shell */
+.portal-shell {
+  font-family: var(--pf-t--global--font--family--mono);
+  font-size: var(--pf-t--global--font--size--sm);
+  background: var(--pf-t--global--background--color--secondary--default);
+  border: 1px solid var(--pf-t--global--border--color--default);
+  border-radius: var(--pf-t--global--border--radius--small, 6px);
+  padding: 0.75rem;
+  min-height: 60vh;
+  max-height: 75vh;
+  overflow-y: auto;
+}
+
+.portal-shell-entry {
+  margin-bottom: 0.75rem;
+}
+
+.portal-shell-prompt {
+  color: var(--pf-t--global--color--status--success--default);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.portal-shell-out {
+  margin: 0.25rem 0 0 1rem;
+}
+
+.portal-shell-error {
+  margin: 0.25rem 0 0 1rem;
+  color: var(--pf-t--global--color--status--danger--default);
+  white-space: pre-wrap;
+}
+
+.portal-shell-muted {
+  color: var(--pf-t--global--text--color--subtle);
+}
+
+.portal-shell-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font: inherit;
+}
+
+.portal-shell-doc {
+  padding: 0.25rem 0;
+  border-bottom: 1px dashed var(--pf-t--global--border--color--default);
+}
+
+.portal-shell-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}

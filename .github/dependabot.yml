@@ -10,3 +10,27 @@ updates:
       update-types:
         - patch
         - minor
+# MongoDB portal (portal/, deploy/)
+- package-ecosystem: gomod
+  directory: '/portal'
+  schedule:
+    interval: weekly
+  groups:
+    go-patterns:
+      update-types: [patch, minor]
+- package-ecosystem: npm
+  directory: '/portal/web'
+  schedule:
+    interval: weekly
+  versioning-strategy: increase
+  groups:
+    web-patterns:
+      update-types: [patch, minor]
+- package-ecosystem: docker
+  directory: '/portal'
+  schedule:
+    interval: weekly
+- package-ecosystem: github-actions
+  directory: '/'
+  schedule:
+    interval: weekly

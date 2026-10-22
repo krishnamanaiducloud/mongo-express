@@ -1,0 +1,22 @@
+# Local development only. Requires PORTAL_ALLOW_INSECURE_DEV_IDENTITY=true.
+# Uses a fixed identity instead of SSO and plain-HTTP cookies.
+environment: local
+server:
+  listenAddress: 127.0.0.1:8080
+  opsListenAddress: 127.0.0.1:9090
+identity:
+  mode: dev
+  developerGroups: [devs]
+  sreGroups: [sres]
+  dev:
+    user: local-developer
+    groups: [sres]
+session:
+  secureCookie: false
+  cookieName: mongo_portal_session
+profiles:
+  - name: local
+    displayName: Local MongoDB
+    uri: mongodb://127.0.0.1:27017/
+    tls:
+      mode: disabled

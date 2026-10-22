@@ -1,0 +1,24 @@
+# Base portal configuration (documented defaults). Environment overlays replace
+# this file through configMapGenerator; the generated name carries a content
+# hash so configuration changes roll the Deployment.
+environment: base
+server:
+  listenAddress: 127.0.0.1:8080      # loopback: only the OAuth proxy sidecar can reach it
+  opsListenAddress: 0.0.0.0:9090     # /healthz /readyz /metrics only
+  hsts: true
+identity:
+  mode: openshift
+  developerGroups: [REPLACE-developer-group]
+  sreGroups: [REPLACE-sre-group]
+session:
+  keyFile: /etc/mongo-portal/session/session-key
+  idleTimeout: 15m
+  absoluteTimeout: 8h
+profiles:
+  - name: primary
+    displayName: Primary replica set
+    uri: mongodb://REPLACE-mongodb-host-0:27017,REPLACE-mongodb-host-1:27017,REPLACE-mongodb-host-2:27017/
+    replicaSet: REPLACE-replica-set
+    defaultAuthSource: admin
+    tls:
+      mode: disabled

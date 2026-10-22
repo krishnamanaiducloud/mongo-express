@@ -1,0 +1,516 @@
+openapi: 3.1.0
+info:
+  title: MongoDB Management Portal API
+  version: 1.0.0
+  description: |
+    REST API of the MongoDB management portal.
+
+    Authentication has two independent stages:
+
+    1. **SSO** – every request must arrive through the OpenShift OAuth proxy,
+       which forwards the user's identity. The portal verifies the identity and
+       maps OpenShift group membership to a portal role (`developer` or `sre`).
+    2. **MongoDB** – `POST /session` authenticates the user's own MongoDB
+       credentials and creates a server-side session (HttpOnly cookie). All
+       database operations run as that MongoDB user.
+
+    State-changing requests require the `X-CSRF-Token` header. Before MongoDB
+    login use `csrfToken` from `GET /me`; afterwards use `csrfToken` from the
+    session. Destructive operations also require `X-Confirm`.
+
+    Query documents are MongoDB Extended JSON (relaxed or canonical) passed as
+    strings. Documents are returned as canonical Extended JSON objects.
+servers:
+  - url: /api/v1
+security:
+  - ssoProxy: []
+tags:
+  - name: identity
+  - name: session
+  - name: databases
+  - name: documents
+  - name: indexes
+paths:
+  /me:
+    get:
+      tags: [identity]
+      summary: Current SSO identity, portal role and pre-login CSRF token
+      responses:
+        "200":
+          description: Identity
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        "401": { $ref: "#/components/responses/SSORequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /profiles:
+    get:
+      tags: [identity]
+      summary: Approved MongoDB connection profiles (hosts are not disclosed)
+      responses:
+        "200":
+          description: Profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/SSORequired" }
+  /session:
+    post:
+      tags: [session]
+      summary: Authenticate to MongoDB with individual credentials
+      description: >
+        Creates a new session (the session identifier is always rotated) after
+        MongoDB verifies the credentials. Passwords are never stored.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Authenticated session
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: HttpOnly, Secure, SameSite=Strict session cookie
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: Too many login attempts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    get:
+      tags: [session]
+      summary: Current MongoDB session
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [session]
+      summary: Log out of MongoDB and close the connection
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /sessions:
+    get:
+      tags: [session]
+      summary: The caller's sessions held by this portal instance
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "401": { $ref: "#/components/responses/SSORequired" }
+  /sessions/{handle}:
+    delete:
+      tags: [session]
+      summary: Terminate one of the caller's sessions
+      parameters:
+        - { name: handle, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/CSRF"
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /audit:
+    get:
+      tags: [identity]
+      summary: Recent audit events (own events; SREs may request scope=all)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, maximum: 1000 } }
+        - { name: scope, in: query, schema: { type: string, enum: [self, all] } }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+  /server:
+    get:
+      tags: [databases]
+      summary: MongoDB build and topology information
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /databases:
+    get:
+      tags: [databases]
+      summary: Databases the MongoDB user is authorized to see
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /databases/{db}/stats:
+    get:
+      tags: [databases]
+      summary: Database statistics (dbStats)
+      parameters: [{ $ref: "#/components/parameters/DB" }]
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /databases/{db}/collections:
+    get:
+      tags: [databases]
+      summary: Collections the MongoDB user is authorized to see
+      parameters: [{ $ref: "#/components/parameters/DB" }]
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [databases]
+      summary: Create a collection (SRE role)
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "201": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /databases/{db}/collections/{coll}:
+    delete:
+      tags: [databases]
+      summary: Drop a collection (SRE role, destructive)
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - $ref: "#/components/parameters/CSRF"
+        - { name: X-Confirm, in: header, required: true, description: Must equal the collection name, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "428": { $ref: "#/components/responses/ConfirmationRequired" }
+  /databases/{db}/collections/{coll}/stats:
+    get:
+      tags: [databases]
+      summary: Collection storage statistics
+      parameters: [{ $ref: "#/components/parameters/DB" }, { $ref: "#/components/parameters/Coll" }]
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+  /databases/{db}/collections/{coll}/documents:
+    get:
+      tags: [documents]
+      summary: Browse documents with server-side pagination
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - { name: filter, in: query, schema: { type: string }, description: Extended JSON filter }
+        - { name: projection, in: query, schema: { type: string } }
+        - { name: sort, in: query, schema: { type: string } }
+        - { name: skip, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: maxTimeMS, in: query, schema: { type: integer } }
+        - { name: count, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: Page of documents
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentPageResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    post:
+      tags: [documents]
+      summary: Insert a document (SRE role)
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentBody" }
+      responses:
+        "201": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /databases/{db}/collections/{coll}/documents/{id}:
+    get:
+      tags: [documents]
+      summary: Get one document
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - $ref: "#/components/parameters/DocID"
+        - { name: format, in: query, schema: { type: string, enum: [canonical, relaxed] } }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [documents]
+      summary: Replace a document (SRE role)
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - $ref: "#/components/parameters/DocID"
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentBody" }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [documents]
+      summary: Delete a document (SRE role, destructive)
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - $ref: "#/components/parameters/DocID"
+        - $ref: "#/components/parameters/CSRF"
+        - { name: X-Confirm, in: header, required: true, description: Must equal "delete", schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "428": { $ref: "#/components/responses/ConfirmationRequired" }
+  /databases/{db}/collections/{coll}/query:
+    post:
+      tags: [documents]
+      summary: Run an approved read query (find, findOne, countDocuments, aggregate)
+      description: >
+        Server-side JavaScript ($where, $function, $accumulator) is rejected.
+        $out and $merge are rejected unless the caller has the SRE role and the
+        deployment enables write stages. Results are bounded by limit,
+        maxTimeMS and a response size cap.
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QueryRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "504":
+          description: maxTimeMS exceeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /databases/{db}/collections/{coll}/indexes:
+    get:
+      tags: [indexes]
+      summary: List indexes
+      parameters: [{ $ref: "#/components/parameters/DB" }, { $ref: "#/components/parameters/Coll" }]
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+    post:
+      tags: [indexes]
+      summary: Create an index (SRE role)
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keys]
+              properties:
+                keys: { type: string, description: 'Extended JSON key document, e.g. {"a": 1}' }
+                options: { type: string, description: "name, unique, sparse, hidden, expireAfterSeconds, partialFilterExpression" }
+      responses:
+        "201": { $ref: "#/components/responses/OK" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /databases/{db}/collections/{coll}/indexes/{name}:
+    delete:
+      tags: [indexes]
+      summary: Drop an index (SRE role, destructive)
+      parameters:
+        - $ref: "#/components/parameters/DB"
+        - $ref: "#/components/parameters/Coll"
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/CSRF"
+        - { name: X-Confirm, in: header, required: true, description: Must equal the index name, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "428": { $ref: "#/components/responses/ConfirmationRequired" }
+  /openapi.yaml:
+    get:
+      tags: [identity]
+      summary: This document
+      security: []
+      responses:
+        "200":
+          description: OpenAPI document
+          content:
+            application/yaml: {}
+components:
+  securitySchemes:
+    ssoProxy:
+      type: apiKey
+      in: header
+      name: X-Forwarded-Access-Token
+      description: Injected by the OpenShift OAuth proxy; never supplied by clients.
+  parameters:
+    DB: { name: db, in: path, required: true, schema: { type: string } }
+    Coll: { name: coll, in: path, required: true, schema: { type: string } }
+    DocID:
+      name: id
+      in: path
+      required: true
+      description: Opaque document id token returned by list endpoints
+      schema: { type: string }
+    CSRF: { name: X-CSRF-Token, in: header, required: true, schema: { type: string } }
+  responses:
+    OK:
+      description: Success
+      content:
+        application/json:
+          schema: { type: object }
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    SSORequired:
+      description: SSO authentication required
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: MongoDB session required, expired or credentials rejected
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Portal role or MongoDB privileges do not permit the operation, or CSRF failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ConfirmationRequired:
+      description: X-Confirm header missing or wrong
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: MongoDB unreachable or TLS verification failed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+            mongoCode: { type: integer }
+    Me:
+      type: object
+      properties:
+        user: { type: string }
+        groups: { type: array, items: { type: string } }
+        role: { type: string, enum: [developer, sre] }
+        canWrite: { type: boolean }
+        csrfToken: { type: string }
+        hasSession: { type: boolean }
+        ssoLogoutURL: { type: string }
+        environment: { type: string }
+    Profile:
+      type: object
+      properties:
+        name: { type: string }
+        displayName: { type: string }
+        description: { type: string }
+        defaultAuthSource: { type: string }
+        authMechanisms: { type: array, items: { type: string } }
+        tlsMode: { type: string, enum: [enabled, disabled] }
+        clientCertificate: { type: boolean }
+        plaintextWarning: { type: boolean }
+        replicaSet: { type: string }
+    LoginRequest:
+      type: object
+      required: [profile, username, password]
+      additionalProperties: false
+      properties:
+        profile: { type: string }
+        username: { type: string, maxLength: 256 }
+        password: { type: string, maxLength: 1024, format: password }
+        authSource: { type: string }
+        mechanism: { type: string, enum: ["", SCRAM-SHA-256, SCRAM-SHA-1] }
+    Session:
+      type: object
+      properties:
+        handle: { type: string }
+        profile: { type: string }
+        mongoUser: { type: string }
+        authSource: { type: string }
+        mechanism: { type: string }
+        tls: { type: boolean }
+        portalRole: { type: string }
+        canWrite: { type: boolean }
+        mongoRoles: { type: array, items: { type: object } }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        idleExpiresAt: { type: string, format: date-time }
+        idleTimeoutSeconds: { type: integer }
+        csrfToken: { type: string }
+    DocumentBody:
+      type: object
+      required: [document]
+      additionalProperties: false
+      properties:
+        document: { type: string, description: Extended JSON document }
+    DocumentPageResponse:
+      type: object
+      properties:
+        page:
+          type: object
+          properties:
+            documents: { type: array, items: { type: object } }
+            ids: { type: array, items: { type: string } }
+            hasMore: { type: boolean }
+            truncated: { type: boolean }
+            skip: { type: integer }
+            limit: { type: integer }
+            elapsedMs: { type: integer }
+        count: { type: integer }
+        countCapped: { type: boolean }
+    QueryRequest:
+      type: object
+      required: [operation]
+      additionalProperties: false
+      properties:
+        operation: { type: string, enum: [find, findOne, countDocuments, aggregate] }
+        filter: { type: string }
+        projection: { type: string }
+        sort: { type: string }
+        pipeline: { type: string, description: Extended JSON array of stages }
+        limit: { type: integer }
+        skip: { type: integer }
+        maxTimeMS: { type: integer }
