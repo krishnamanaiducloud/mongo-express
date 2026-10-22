@@ -17,6 +17,10 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: mongo-portal
+      annotations:
+        # Admit only under the dedicated SCC (deploy/cluster); fails loudly
+        # instead of falling back if the RoleBinding is missing.
+        openshift.io/required-scc: mongo-portal-restricted
     spec:
       serviceAccountName: mongo-portal
       automountServiceAccountToken: true

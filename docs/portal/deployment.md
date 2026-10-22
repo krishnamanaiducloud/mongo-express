@@ -40,14 +40,29 @@ oc exec -n "$MONGO_NS" <mongo-pod> -- mongosh --quiet -u <admin> -p --authentica
 
 * OpenShift 4.x with the integrated OAuth server (corporate IdP configured).
 * Two OpenShift Groups, e.g. `mongo-portal-developers-prod` and
-  `mongo-portal-sre-prod` (`oc adm groups new …` or LDAP/OIDC group sync).
+  `mongo-portal-sre-prod` (`oc adm groups new â€¦` or LDAP/OIDC group sync).
 * A namespace for the portal (`oc new-project mongo-portal-prod`), with network
   access to the MongoDB pods on 27017.
 * Individual MongoDB users for every portal user ([mongodb-rbac.md](mongodb-rbac.md)).
 * Pull access to `docker.io/mohankrishna999/mongo-express` and to an OAuth proxy
   image (Red Hat `ose-oauth-proxy` recommended in production).
 
-## 3. Create the Secrets (once per namespace)
+## 3. Apply the SecurityContextConstraints (once per cluster)
+
+The portal pods run under the dedicated `mongo-portal-restricted` SCC
+(restricted-v2 plus a mandatory read-only root filesystem and a minimal
+volume allowlist), requested with the `openshift.io/required-scc` annotation.
+A cluster administrator applies it once:
+
+```bash
+oc apply -k deploy/cluster
+oc get scc mongo-portal-restricted
+```
+
+The namespace grants the portal ServiceAccount `use` of it with the RoleBinding
+in `deploy/base/rbac-scc.yaml`. See [mongo-express-openshift.md](../mongo-express-openshift.md#securitycontextconstraints).
+
+## 4. Create the Secrets (once per namespace)
 
 See [secrets.md](secrets.md). Minimum:
 
@@ -62,7 +77,7 @@ oc create secret tls mongo-portal-mongodb-client -n $NS --cert=client.crt --key=
 
 `mongo-portal-tls` is created automatically by the service CA.
 
-## 4. Configure the overlay
+## 5. Configure the overlay
 
 Edit `deploy/overlays/<env>/`:
 
@@ -84,7 +99,7 @@ oc kustomize deploy/overlays/prod | less
 oc kustomize deploy/overlays/prod | oc apply --dry-run=server -f -
 ```
 
-## 5. Deploy
+## 6. Deploy
 
 GitOps (recommended): see [gitops.md](gitops.md). Manual:
 
@@ -94,23 +109,23 @@ oc rollout status deploy/mongo-portal -n mongo-portal-prod
 oc get route mongo-portal -n mongo-portal-prod -o jsonpath='https://{.spec.host}{"\n"}'
 ```
 
-## 6. Verify
+## 7. Verify
 
 ```bash
 oc get pods -n $NS -l app.kubernetes.io/name=mongo-portal \
   -o custom-columns=NAME:.metadata.name,SCC:.metadata.annotations.openshift\\.io/scc,UID:.spec.securityContext.runAsUser
-#   SCC must be restricted-v2 (no custom SCC is needed)
+#   SCC must be mongo-portal-restricted
 oc logs deploy/mongo-portal -c portal -n $NS | grep '"mongo portal started"'
 oc exec deploy/mongo-portal -c portal -n $NS -- /usr/bin/mongo-portal healthcheck && echo healthy
 ```
 
-Then browse to the Route: SSO login → MongoDB login → databases. Check that a
+Then browse to the Route: SSO login â†’ MongoDB login â†’ databases. Check that a
 member of neither group gets "Access denied", that a developer sees no write
 controls, and that `POST`/`DELETE` calls with a developer session return 403.
 
 ## Debug image
 
-Use `…:0.1.0-debug` (dev overlay default) or `oc debug`-style ephemeral
+Use `â€¦:0.1.0-debug` (dev overlay default) or `oc debug`-style ephemeral
 access:
 
 ```bash

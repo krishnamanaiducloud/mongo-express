@@ -1,0 +1,49 @@
+# Ingress: only the OpenShift router may reach mongo-express.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-express-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mongo-express
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 8081
+          protocol: TCP
+---
+# Egress: DNS and the MongoDB pods only. Overlays MUST set the MongoDB
+# namespace and pod labels (oc get pods -n <mongodb-ns> --show-labels).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-express-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mongo-express
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - { port: 5353, protocol: UDP }
+        - { port: 5353, protocol: TCP }
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: REPLACE-mongodb-namespace
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: REPLACE-mongodb-pod-label
+      ports:
+        - { port: 27017, protocol: TCP }

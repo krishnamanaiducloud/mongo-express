@@ -1,0 +1,95 @@
+# Argo CD resources for mongo-express (the Node.js web admin). The project
+# allows only the kinds mongo-express uses; StatefulSets, PVCs and Secrets
+# (and therefore the existing MongoDB workloads) can never be managed.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: mongo-express
+spec:
+  description: mongo-express web admin (its own resources only)
+  sourceRepos:
+    - https://github.com/krishnamanaiducloud/mongo-express.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: mongo-express-dev
+    - server: https://kubernetes.default.svc
+      namespace: mongo-express-prod
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment
+    - group: route.openshift.io
+      kind: Route
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+  namespaceResourceBlacklist:
+    - group: apps
+      kind: StatefulSet
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Secret
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mongo-express-dev
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: mongo-express
+  source:
+    repoURL: https://github.com/krishnamanaiducloud/mongo-express.git
+    targetRevision: master
+    path: deploy/mongo-express/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mongo-express-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+  ignoreDifferences:
+    - group: route.openshift.io
+      kind: Route
+      jsonPointers:
+        - /spec/host
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mongo-express-prod
+spec:
+  project: mongo-express
+  source:
+    repoURL: https://github.com/krishnamanaiducloud/mongo-express.git
+    targetRevision: master
+    path: deploy/mongo-express/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mongo-express-prod
+  # Manual sync only.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+  ignoreDifferences:
+    - group: route.openshift.io
+      kind: Route
+      jsonPointers:
+        - /spec/host

@@ -1,0 +1,27 @@
+# Point the egress rule at the existing MongoDB pods:
+#   oc get statefulset -A | grep -i mongo
+#   oc get pods -n <mongodb-namespace> --show-labels
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-express-egress
+spec:
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - { port: 5353, protocol: UDP }
+        - { port: 5353, protocol: TCP }
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: REPLACE-mongodb-namespace
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: REPLACE-mongodb-pod-label
+      ports:
+        - { port: 27017, protocol: TCP }

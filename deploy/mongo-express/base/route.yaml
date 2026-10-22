@@ -1,0 +1,20 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mongo-express
+  annotations:
+    # Sessions are kept in the pod's memory: keep each browser on one pod.
+    router.openshift.io/cookie_name: mongo_express_affinity
+    haproxy.router.openshift.io/disable_cookies: "false"
+    haproxy.router.openshift.io/hsts_header: max-age=31536000;includeSubDomains
+spec:
+  to:
+    kind: Service
+    name: mongo-express
+    weight: 100
+  port:
+    targetPort: https
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

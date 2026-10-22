@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Must match the Argo CD Application destination namespace.
+namespace: mongo-express-prod
+
+resources:
+  - ../../base
+
+# Minimal image pinned by immutable digest (set after publication).
+images:
+  - name: docker.io/mohankrishna999/mongo-express
+    newName: docker.io/mohankrishna999/mongo-express
+    newTag: 0.0.1
+
+replicas:
+  - name: mongo-express
+    count: 2
+
+patches:
+  - path: patch-networkpolicy.yaml

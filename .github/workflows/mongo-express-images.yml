@@ -1,0 +1,40 @@
+name: mongo-express-images
+
+# Builds the minimal (Dockerfile) and debug (Dockerfile.debug) mongo-express
+# images, runs the same functional tests against both, and scans them.
+# Publishing is done manually or by a release process; nothing is deployed.
+
+on:
+  pull_request:
+    paths: ["Dockerfile", "Dockerfile.debug", ".dockerignore", "app.js", "config.default.js", "lib/**", "public/**", "package.json", "yarn.lock", "scripts/test-images.sh", ".github/workflows/mongo-express-images.yml"]
+  push:
+    branches: [master]
+    paths: ["Dockerfile", "Dockerfile.debug", ".dockerignore", "app.js", "config.default.js", "lib/**", "public/**", "package.json", "yarn.lock", "scripts/test-images.sh", ".github/workflows/mongo-express-images.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Lint Dockerfiles
+        run: |
+          docker run --rm -i hadolint/hadolint < Dockerfile
+          docker run --rm -i hadolint/hadolint < Dockerfile.debug
+      - name: Build minimal and debug (linux/amd64)
+        run: |
+          docker buildx build --load -f Dockerfile --build-arg VERSION="${GITHUB_REF_NAME}" --build-arg COMMIT="${GITHUB_SHA}" -t mongo-express:minimal .
+          docker buildx build --load -f Dockerfile.debug --build-arg VERSION="${GITHUB_REF_NAME}" --build-arg COMMIT="${GITHUB_SHA}" -t mongo-express:debug .
+      - name: Functional tests on both images (identical behaviour)
+        run: bash scripts/test-images.sh mongo-express:minimal mongo-express:debug
+      - name: Trivy – minimal (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with: { image-ref: "mongo-express:minimal", severity: "HIGH,CRITICAL", ignore-unfixed: true, exit-code: "1" }
+      - name: Trivy – debug (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with: { image-ref: "mongo-express:debug", severity: "HIGH,CRITICAL", ignore-unfixed: true, exit-code: "1" }

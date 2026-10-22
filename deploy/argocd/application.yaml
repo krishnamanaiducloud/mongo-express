@@ -30,6 +30,8 @@ spec:
     - group: rbac.authorization.k8s.io
       kind: ClusterRoleBinding
   namespaceResourceWhitelist:
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
     - group: ""
       kind: ServiceAccount
     - group: ""

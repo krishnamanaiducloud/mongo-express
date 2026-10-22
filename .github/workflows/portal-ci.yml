@@ -102,8 +102,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/rendered
-          for env in dev test prod; do
-            kubectl kustomize "overlays/$env" > "/tmp/rendered/$env.yaml"
+          for env in dev test prod cluster mongo-express/overlays/dev mongo-express/overlays/prod; do
+            if [ -d "overlays/$env" ]; then dir="overlays/$env"; else dir="$env"; fi
+            env="$(echo "$env" | tr / _)"
+            kubectl kustomize "$dir" > "/tmp/rendered/$env.yaml"
             "$(go env GOPATH)/bin/kubeconform" -strict -summary -kubernetes-version 1.31.0 \
               -schema-location default \
               -schema-location 'https://raw.githubusercontent.com/melmorabity/openshift-json-schemas/main/v4.18-standalone-strict/{{.ResourceKind}}{{.KindSuffix}}.json' \
@@ -112,7 +114,7 @@ jobs:
           done
           "$(go env GOPATH)/bin/kubeconform" -strict -summary \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            argocd/application.yaml
+            argocd/*.yaml
       - name: Guardrails (no MongoDB workloads, no fixed UIDs, no privileged)
         run: |
           ! grep -nE '^kind: (StatefulSet|PersistentVolumeClaim|Secret)$' /tmp/rendered/*.yaml

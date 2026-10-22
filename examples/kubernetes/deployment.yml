@@ -14,12 +14,14 @@ spec:
       labels:
         app.kubernetes.io/name: mongo-express
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-        - image: mongo-express:latest
+        - image: docker.io/mohankrishna999/mongo-express:0.0.1
+          imagePullPolicy: IfNotPresent
           name: mongo-express
           ports:
             - containerPort: 8081
@@ -56,3 +58,15 @@ spec:
                 name: mongo-express-url
           securityContext:
             allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

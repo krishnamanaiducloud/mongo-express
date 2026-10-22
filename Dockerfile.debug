@@ -1,0 +1,194 @@
+# syntax=docker/dockerfile:1.12
+#
+# mongo-express Ã¢â‚¬â€ diagnostic image (Chainguard / Wolfi).
+#
+# Same application build, same Node.js and base package versions as the
+# minimal image (Dockerfile), plus troubleshooting tools: shells, network and
+# DNS diagnostics, process and system inspection, tracing and debugging,
+# packet capture, editors and JSON/YAML tools, npm, the official mongosh and
+# MongoDB Database Tools (built from source with a current Go toolchain).
+#
+# The application runs exactly as in the minimal image (same entrypoint,
+# environment, user and files); the tools are only extra files on PATH.
+# The image still runs as a non-root arbitrary UID: tools that need extra
+# capabilities (tcpdump, strace, gdb attach) only work if the pod is granted
+# them, which the restricted SCC does not do.
+#
+# Build:  docker buildx build -f Dockerfile.debug --platform linux/amd64,linux/arm64 -t <image>:<tag>-debug .
+
+ARG NODE_DEV_IMAGE=cgr.dev/chainguard/node:latest-dev@sha256:8e34ebb063dd6af4232c01466eb3813dc94ff68d06ed624652830427e032d64b
+ARG NODE_IMAGE=cgr.dev/chainguard/node:latest@sha256:6ec35d87faf19dab94214bd8ccd38785a72cf3de02946044a196df1689311376
+ARG WOLFI_IMAGE=cgr.dev/chainguard/wolfi-base:latest@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323
+ARG GO_IMAGE=cgr.dev/chainguard/go:latest-dev@sha256:820b9bc89b422d39107641b858ae4caabed12fc74cfac31726e88f7306ff7827
+
+# ------------------------------------------------------------- application
+FROM --platform=$BUILDPLATFORM ${NODE_DEV_IMAGE} AS build
+ARG ENABLE_OIDC=false
+ENV CYPRESS_INSTALL_BINARY=0 \
+    MONGOMS_DISABLE_POSTINSTALL=1 \
+    YARN_ENABLE_GLOBAL_CACHE=false \
+    YARN_CACHE_FOLDER=/yarn-cache
+# hadolint ignore=DL3002
+USER root
+WORKDIR /dockerbuild
+COPY . .
+SHELL ["/bin/sh", "-o", "pipefail", "-c"]
+# pipefail is set via SHELL (busybox sh supports it; hadolint only recognises bash/ash).
+# hadolint ignore=DL4006
+RUN --mount=type=cache,target=/yarn-cache,sharing=locked \
+    set -eu; \
+    yarn() { node .yarn/releases/yarn-4.12.0.cjs "$@"; }; \
+    if [ "$ENABLE_OIDC" = "true" ]; then \
+      node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));p.dependencies["express-openid-connect"]="^2.19.2";if(p.peerDependencies)delete p.peerDependencies["express-openid-connect"];if(p.peerDependenciesMeta)delete p.peerDependenciesMeta["express-openid-connect"];fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'; \
+      yarn install; \
+    else \
+      yarn install --immutable; \
+    fi; \
+    yarn build; \
+    yarn workspaces focus --production; \
+    rm -rf /dockerbuild/lib/scripts; \
+    if find node_modules -name '*.node' | grep -q .; then \
+      echo "native addons found in production dependencies:"; find node_modules -name '*.node'; exit 1; \
+    fi
+
+# ------------------------------------------------------- runtime packages
+FROM ${NODE_IMAGE} AS nodebase
+
+FROM --platform=$BUILDPLATFORM ${WOLFI_IMAGE} AS rootfs
+ARG TARGETARCH
+COPY --from=nodebase /usr/lib/apk/db/installed /tmp/base-installed
+SHELL ["/bin/sh", "-o", "pipefail", "-c"]
+# Base: every package of the pinned Chainguard node image at its exact
+# version (including busybox and npm). Tools: added on top; the base pins
+# keep Node.js and its libraries identical to the minimal image.
+# hadolint ignore=DL3018,DL4006,SC2086
+RUN set -eu; \
+    case "${TARGETARCH}" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; *) echo "unsupported ${TARGETARCH}"; exit 1 ;; esac; \
+    base="$(awk '/^P:/{p=substr($0,3)} /^V:/{print p "=" substr($0,3)}' /tmp/base-installed | tr '\n' ' ')"; \
+    tools=" \
+      bash coreutils findutils grep sed gawk diffutils less vim file gzip unzip tzdata \
+      curl wget bind-tools openssl iproute2 net-tools iputils mtr netcat-openbsd socat \
+      tcpdump ngrep tshark-4.4 \
+      procps htop psmisc sysstat util-linux lsof strace ltrace gdb \
+      jq yq git python-3.13"; \
+    mkdir -p /rootfs; \
+    # shellcheck disable=SC2086
+    apk add --root /rootfs --initdb --arch "${arch}" --no-cache --no-scripts \
+      --keys-dir /etc/apk/keys --repositories-file /etc/apk/repositories ${base} ${tools}; \
+    # --no-scripts skips busybox's applet-symlink trigger; create links from the
+    # package's own applet list for applets no other package provides.
+    sed 's#^/##' /rootfs/etc/busybox-paths.d/busybox | while read -r applet; do \
+      [ -n "${applet}" ] || continue; \
+      if [ ! -e "/rootfs/${applet}" ] && [ ! -L "/rootfs/${applet}" ]; then \
+        mkdir -p "/rootfs/$(dirname "${applet}")"; ln -s /usr/bin/busybox "/rootfs/${applet}"; \
+      fi; \
+    done; \
+    rm -rf /rootfs/var/cache/apk /rootfs/etc/apk/cache; \
+    # Some tools (e.g. ping, tcpdump) ship with file capabilities. Under no_new_privs
+    # (allowPrivilegeEscalation: false, enforced by the SCC) the kernel refuses
+    # to execute such binaries, so strip them: the tools run as ordinary
+    # programs and never gain privileges.
+    apk add --no-cache libcap-utils; \
+    getcap -r /rootfs 2>/dev/null | awk '{print $1}' | while read -r f; do setcap -r "$f"; done; \
+    test -z "$(getcap -r /rootfs 2>/dev/null)"; \
+    grep -q ':65532:' /rootfs/etc/passwd || echo 'nonroot:x:65532:65532:nonroot:/tmp:/bin/bash' >> /rootfs/etc/passwd; \
+    grep -q ':65532:' /rootfs/etc/group || echo 'nonroot:x:65532:' >> /rootfs/etc/group; \
+    test -x /rootfs/usr/bin/node; test -x /rootfs/usr/bin/dumb-init; test -e /rootfs/bin/sh; test -x /rootfs/usr/bin/bash
+
+# ------------------------------------------------- official mongosh CLI
+FROM --platform=$BUILDPLATFORM ${WOLFI_IMAGE} AS mongosh
+ARG TARGETARCH
+ARG MONGOSH_VERSION=2.13.0
+ARG MONGOSH_SHA256_AMD64=b2089e67641a28aa621476c4d62c69f66b9a41484baba24d8a8b1f5f96e92d0b
+ARG MONGOSH_SHA256_ARM64=a124ec6680c70ceabc61696bbd110f0da05d7c52524ed402ae9511b5aec7fe32
+SHELL ["/bin/sh", "-o", "pipefail", "-c"]
+# The download is verified against the pinned SHA-256 checksums above.
+# hadolint ignore=DL3018,DL4006
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) sa=x64; ss="${MONGOSH_SHA256_AMD64}" ;; \
+      arm64) sa=arm64; ss="${MONGOSH_SHA256_ARM64}" ;; \
+      *) exit 1 ;; esac; \
+    apk add --no-cache curl; \
+    curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/mongosh.tgz \
+      "https://downloads.mongodb.com/compass/mongosh-${MONGOSH_VERSION}-linux-${sa}.tgz"; \
+    echo "${ss}  /tmp/mongosh.tgz" | sha256sum -c -; \
+    mkdir -p /out/bin /out/licenses/mongosh /tmp/m; \
+    tar -xzf /tmp/mongosh.tgz -C /tmp/m --strip-components=1; \
+    install -m 0755 /tmp/m/bin/mongosh /out/bin/mongosh; \
+    cp /tmp/m/LICENSE-mongosh /out/licenses/mongosh/; \
+    cp /tmp/m/.sbom.json /out/licenses/mongosh/sbom.json
+
+# ------------------------------------ MongoDB Database Tools from source
+# MongoDB's prebuilt 100.19.1 binaries are compiled with Go 1.26.8 and
+# golang.org/x/net 0.59.0, which have known vulnerabilities. The same release
+# is built here from its verified git commit with the current Go toolchain
+# and patched dependencies (pure Go, cross-compiled per architecture).
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS dbtools
+ARG TARGETOS
+ARG TARGETARCH
+ARG DBTOOLS_VERSION=100.19.1
+ARG DBTOOLS_COMMIT=9348e032419d906e40966f477278cce647b9b1eb
+ARG XNET_VERSION=v0.61.0
+ARG XCRYPTO_VERSION=v0.58.0
+# hadolint ignore=DL3002
+USER root
+WORKDIR /src
+RUN set -eu; \
+    git clone --quiet --depth 1 --branch "${DBTOOLS_VERSION}" https://github.com/mongodb/mongo-tools.git .; \
+    test "$(git rev-parse HEAD)" = "${DBTOOLS_COMMIT}"; \
+    go get "golang.org/x/net@${XNET_VERSION}" "golang.org/x/crypto@${XCRYPTO_VERSION}"; \
+    if [ -d vendor ]; then go mod vendor; fi; \
+    mkdir -p /out/bin /out/licenses/mongodb-database-tools; \
+    for t in bsondump mongodump mongoexport mongofiles mongoimport mongorestore mongostat mongotop; do \
+      CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" GOFLAGS=-buildvcs=false \
+        go build -trimpath -ldflags "-s -w -X main.VersionStr=${DBTOOLS_VERSION} -X main.GitCommit=${DBTOOLS_COMMIT}" \
+        -o "/out/bin/${t}" "./${t}/main"; \
+    done; \
+    cp LICENSE.md THIRD-PARTY-NOTICES /out/licenses/mongodb-database-tools/ 2>/dev/null || cp LICENSE* /out/licenses/mongodb-database-tools/
+
+# ---------------------------------------------------------------- debug
+FROM scratch AS debug
+ARG VERSION=dev
+ARG COMMIT=unknown
+COPY --from=rootfs /rootfs/ /
+COPY --from=mongosh /out/bin/ /usr/local/bin/
+COPY --from=mongosh /out/licenses/ /usr/share/licenses/
+COPY --from=dbtools /out/bin/ /usr/local/bin/
+COPY --from=dbtools /out/licenses/ /usr/share/licenses/
+
+WORKDIR /opt/mongo-express
+COPY --from=build /dockerbuild/build /opt/mongo-express/build/
+COPY --from=build /dockerbuild/public /opt/mongo-express/public/
+COPY --from=build /dockerbuild/lib /opt/mongo-express/lib/
+COPY --from=build /dockerbuild/app.js /opt/mongo-express/
+COPY --from=build /dockerbuild/config.default.js /opt/mongo-express/
+COPY --from=build /dockerbuild/build-assets.json /opt/mongo-express/
+COPY --from=build /dockerbuild/package.json /opt/mongo-express/
+COPY --from=build /dockerbuild/node_modules /opt/mongo-express/node_modules/
+
+# Identical to the minimal image (PATH additionally includes /usr/local/bin).
+ENV ME_CONFIG_MONGODB_URL="mongodb://mongo:27017" \
+    ME_CONFIG_MONGODB_ENABLE_ADMIN="true" \
+    NODE_ENV="production" \
+    VCAP_APP_HOST="0.0.0.0" \
+    HOME="/tmp" \
+    TMPDIR="/tmp" \
+    PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
+
+LABEL org.opencontainers.image.title="mongo-express-debug" \
+      org.opencontainers.image.description="mongo-express web admin for MongoDB (diagnostic Chainguard/Wolfi image)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.source="https://github.com/krishnamanaiducloud/mongo-express" \
+      org.opencontainers.image.licenses="MIT"
+
+EXPOSE 8081
+USER 65532:0
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+  CMD ["/usr/bin/node", "-e", "require('http').get('http://127.0.0.1:'+(process.env.PORT||8081)+(process.env.ME_CONFIG_HEALTH_CHECK_PATH||'/status'),r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/bin/node"]
+CMD ["app.js"]

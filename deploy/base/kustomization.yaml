@@ -6,6 +6,7 @@ kind: Kustomization
 resources:
   - serviceaccount.yaml
   - rbac.yaml
+  - rbac-scc.yaml
   - deployment.yaml
   - service.yaml
   - route.yaml

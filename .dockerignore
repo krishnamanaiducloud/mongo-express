@@ -1,1 +1,17 @@
 .git
+node_modules
+build
+# Not part of the mongo-express image build context
+portal
+deploy
+docs
+cypress
+test
+examples
+.github
+.husky
+.bluemix
+*.md
+!README.md
+.env
+.env.*
