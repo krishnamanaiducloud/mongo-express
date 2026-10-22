@@ -100,6 +100,22 @@ tools at scan time; it is not proof of absence of vulnerabilities.
 | GO-2026-5932 | `golang.org/x/crypto` v0.58.0 (`openpgp` package) | Unknown (advisory: package unmaintained, unsafe by design) | Not reachable: the portal never imports `x/crypto/openpgp` (govulncheck symbol analysis) | No fixed version exists; the module is required transitively by the MongoDB driver | Keep x/crypto current (Dependabot); govulncheck gate in CI fails if it becomes reachable | 2027-01-22 |
 | KSV-0125 | Deployment images (docker.io, quay.io) | Medium | Policy finding, not a vulnerability | Registry choice is site policy | Production pins digests; mirror to an approved registry and configure the allowlist | at production onboarding |
 
+## Published images
+
+Built from a clean `git archive` of commit `b8f25d23b6311c3888798a7e9b3a41b640788e72`
+with BuildKit (cross-compiled, no emulation), SBOM and `mode=max` provenance
+attestations attached. Existing tags were checked first and not overwritten;
+`latest` was not changed.
+
+| Image | Index digest | Platforms | Verified |
+| --- | --- | --- | --- |
+| `docker.io/mohankrishna999/mongo-express:0.1.0` | `sha256:7592c5d020168ffc2c11f5a49d6efc51f3d94901e9b4de1aab1ef52adc978918` | linux/amd64, linux/arm64 | revision label + provenance = b8f25d2, user 65532:0, arm64 binary is aarch64, pulled image runs, Trivy: 1 Unknown |
+| `docker.io/mohankrishna999/mongo-express:0.1.0-debug` | `sha256:b97e4bbd6a5a3f37cfc86374e0e54fb20d396845b32a87882a39425b42c1ea0e` | linux/amd64, linux/arm64 | same; mongosh 2.13.0 runs as arbitrary UID, Trivy: 1 Unknown |
+
+Not done: cosign signatures (no signing key/identity configured locally; the CI
+release job signs keylessly). arm64 images were inspected but not executed
+(no arm64 host or emulator available).
+
 ## Not environment-validated (requires an OpenShift cluster)
 
 * OpenShift OAuth proxy flow end to end (redirect, callback, token forwarding)
