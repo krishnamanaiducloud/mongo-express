@@ -35,3 +35,13 @@ make scan               # govulncheck, gosec, npm audit, gitleaks, hadolint, tri
 
 Both run as any UID with GID 0, need no writable path other than `/tmp`,
 contain no package manager, and are built for `linux/amd64` and `linux/arm64`.
+
+## mongosh
+
+* **In the UI (both images):** the Shell page runs the real mongosh runtime in
+  the browser, isolated in an opaque-origin sandbox and worker; every database
+  operation goes through `/api/v1/shell` and is checked like the rest of the API.
+  See [architecture](../docs/portal/architecture.md#in-browser-mongosh-shell).
+* **CLI (debug image only):** `mongosh` binary for operators using `oc rsh`.
+
+Browser end-to-end test: `bash test/e2e/run.sh mongo-portal:production`.

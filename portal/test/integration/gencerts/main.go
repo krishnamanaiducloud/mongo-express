@@ -82,7 +82,9 @@ func serial() *big.Int {
 	return n
 }
 
-func pemCert(der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}) }
+func pemCert(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
 
 func pemKey(k *ecdsa.PrivateKey) []byte {
 	b, err := x509.MarshalPKCS8PrivateKey(k)

@@ -177,3 +177,41 @@
   gap: 0.5rem;
   align-items: center;
 }
+
+.portal-shell-code {
+  white-space: pre-wrap;
+}
+
+.portal-shell-input textarea {
+  font-family: var(--pf-t--global--font--family--mono);
+}
+
+.portal-shell-completions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0.25rem 0 0 1.5rem;
+}
+
+.portal-shell-completion {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--pf-t--global--text--color--link--default);
+}
+
+.portal-shell-completion:focus-visible {
+  outline: 2px solid var(--pf-t--global--border--color--clicked);
+}
+
+.portal-shell-table td {
+  padding: 0 1rem 0 0;
+  vertical-align: top;
+}
+
+.portal-shell-help-name {
+  white-space: nowrap;
+  font-weight: 600;
+}

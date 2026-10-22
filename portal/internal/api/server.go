@@ -167,6 +167,7 @@ func (s *Server) register() {
 	s.handle("GET", v+"/databases/{db}/collections/{coll}/indexes", levelSession, 0, s.handleListIndexes)
 	s.handle("POST", v+"/databases/{db}/collections/{coll}/indexes", levelWrite, small, s.handleCreateIndex)
 	s.handle("DELETE", v+"/databases/{db}/collections/{coll}/indexes/{name}", levelWrite, 0, s.handleDropIndex)
+	s.handle("POST", v+"/shell", levelSession, docBody, s.handleShell)
 
 	s.routes = append(s.routes, Route{Method: "GET", Path: v + "/openapi.yaml"})
 	s.mux.Handle("GET "+v+"/openapi.yaml", s.instrument("GET "+v+"/openapi.yaml", 0, http.HandlerFunc(serveOpenAPI)))

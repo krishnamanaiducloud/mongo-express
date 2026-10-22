@@ -349,6 +349,53 @@ paths:
         "200": { $ref: "#/components/responses/OK" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "428": { $ref: "#/components/responses/ConfirmationRequired" }
+  /shell:
+    post:
+      tags: [documents]
+      summary: Driver operation for the in-browser mongosh shell
+      description: |
+        The mongosh runtime runs in a sandboxed iframe in the browser and sends
+        each driver operation through the portal page to this endpoint. No
+        JavaScript is evaluated on the server. `args` is an Extended JSON
+        document whose fields depend on `op`; the result is canonical Extended
+        JSON.
+
+        Read operations: connectionInfo, listDatabases, listCollections,
+        getIndexes, find, aggregate, getMore, killCursor, countDocuments,
+        estimatedDocumentCount, distinct, explain, runCommand (allowlisted
+        commands only).
+
+        Write operations (SRE portal role): insertOne, insertMany, updateOne,
+        updateMany*, replaceOne, deleteOne, deleteMany*, findOneAndDelete,
+        findOneAndReplace, findOneAndUpdate, bulkWrite*, createIndexes,
+        dropIndexes*, createCollection, dropCollection*, dropDatabase*,
+        renameCollection*. Operations marked * require `X-Confirm: <op>`.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - { name: X-Confirm, in: header, required: false, description: Must equal the operation name for destructive operations, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [op]
+              additionalProperties: false
+              properties:
+                op: { type: string }
+                args: { type: string, description: Extended JSON document }
+      responses:
+        "200":
+          description: Operation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { type: string, description: Canonical Extended JSON document }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "428": { $ref: "#/components/responses/ConfirmationRequired" }
   /openapi.yaml:
     get:
       tags: [identity]

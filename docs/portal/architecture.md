@@ -98,6 +98,48 @@ grammar parsed in the browser into API calls). The validator:
 Destructive operations (drop collection, drop index, delete document) require
 an `X-Confirm` header naming the target; the UI collects a typed confirmation.
 
+## In-browser mongosh shell
+
+The Shell page runs the **real mongosh runtime** (`@mongosh/browser-runtime-core`:
+evaluator, shell API and autocompletion, the same components Compass uses),
+so JavaScript, variables, loops, `printjson`, cursor helpers and Tab completion
+behave as in mongosh. It is isolated in three layers:
+
+```
+portal page (strict CSP)                sandbox iframe (opaque origin)         dedicated worker (same opaque origin)
+  ShellPage + broker  ◀── MessagePort ──────────────────────────────────────▶  mongosh runtime + PortalServiceProvider
+      │  allowlist, confirmations,        bootstrap only: starts the worker     evaluates user JavaScript
+      │  concurrency limit                and hands it the port                 no network, no cookies, no storage
+      ▼
+  POST /api/v1/shell  (session cookie + CSRF; server validates every op again)
+```
+
+* `/shell-sandbox.html` is served with `Content-Security-Policy: sandbox allow-scripts;
+  script-src 'self' 'unsafe-eval'; connect-src 'none'; worker-src blob:; frame-ancestors 'self'; …`.
+  The sandbox (and the worker it starts) therefore has an **opaque origin**: it
+  cannot read the portal's cookies, storage or DOM, and cannot make any network
+  request. `'unsafe-eval'` (required to evaluate JavaScript) is granted only
+  there; the portal page itself keeps `script-src 'self'` without eval.
+* The runtime runs in a worker so runaway scripts never block the portal page;
+  **Interrupt** removes the sandbox, which terminates the worker.
+* mongosh calls the driver through `PortalServiceProvider`, which turns each
+  call into a typed operation (`find`, `aggregate`, `getMore`, `insertOne`,
+  `updateMany`, `runCommand`, …) sent over the MessagePort. The broker on the
+  portal page enforces an operation allowlist, blocks writes for read-only
+  roles, asks for confirmation of bulk and destructive operations (typed
+  confirmation for drops), and limits concurrency.
+* The server (`/api/v1/shell`) applies the same checks as the rest of the API:
+  portal role, JavaScript operators rejected anywhere, `$out`/`$merge` policy,
+  `runCommand` allowlist (user/role management, `eval`, `mapReduce`, `shutdown`,
+  replica-set changes and similar are always denied), server-checked
+  `X-Confirm` for destructive operations, no writes to `local`, `config` or
+  `system.*`, time/size limits, and real server-side cursors with per-session
+  caps. Every write is audited. MongoDB enforces the user's privileges last.
+* Not supported: connecting to other deployments (`Mongo()`, `connect()`),
+  `db.auth()`, sessions/transactions, change streams, client-side encryption,
+  `load()`/files, the legacy Bulk API. `dropDatabase` is disabled unless
+  `shell.allowDropDatabase: true`.
+
 ## Transport security to MongoDB
 
 Each profile declares `tls.mode: enabled | disabled` explicitly (no default):

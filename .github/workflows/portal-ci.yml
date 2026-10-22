@@ -153,6 +153,8 @@ jobs:
           done
       - name: Smoke test (arbitrary UIDs, read-only rootfs, login flow)
         run: bash test/container/smoke.sh mongo-portal:production mongo-portal:debug
+      - name: Browser end-to-end test (mongosh shell, sandbox isolation)
+        run: bash test/e2e/run.sh mongo-portal:production
       - name: Trivy – production (fail on fixable HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -156,6 +157,43 @@ func TestConcurrentUsersAreIsolated(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+type fakeCursor struct{ closed *atomic.Int32 }
+
+func (f fakeCursor) Close(context.Context) error { f.closed.Add(1); return nil }
+
+func TestCursorRegistry(t *testing.T) {
+	st, _, _ := newTestStore(t, Options{IdleTimeout: time.Hour, AbsoluteTimeout: time.Hour})
+	sec, _ := st.Create(&Session{SSOUser: "a"}, "")
+	s, _ := st.Get(sec, "a")
+	var closed atomic.Int32
+	c1, err := s.AddCursor(fakeCursor{&closed}, 2, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddCursor(fakeCursor{&closed}, 2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddCursor(fakeCursor{&closed}, 2, time.Hour); !errors.Is(err, ErrTooManyCursors) {
+		t.Fatalf("cursor limit: %v", err)
+	}
+	if got, ok := s.GetCursor(c1.ID, time.Hour); !ok || got != c1 {
+		t.Fatal("get cursor")
+	}
+	s.CloseCursor(c1.ID)
+	if _, ok := s.GetCursor(c1.ID, time.Hour); ok || closed.Load() != 1 {
+		t.Fatal("close cursor")
+	}
+	// Idle cursors are reaped.
+	time.Sleep(5 * time.Millisecond)
+	if _, ok := s.GetCursor("x", time.Millisecond); ok || s.CursorCount() != 0 {
+		t.Fatal("idle reap")
+	}
+	// Ending the session closes remaining cursors.
+	_, _ = s.AddCursor(fakeCursor{&closed}, 2, time.Hour)
+	st.Delete(sec, "logout")
+	waitFor(t, func() bool { return closed.Load() == 3 })
 }
 
 func TestDeleteByHandleAndSweep(t *testing.T) {

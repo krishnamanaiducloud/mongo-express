@@ -50,6 +50,106 @@ type Session struct {
 	mu       sync.Mutex
 	lastSeen time.Time
 	key      [32]byte
+
+	curMu   sync.Mutex
+	cursors map[string]*Cursor
+	// Shell limits concurrent shell operations for this session.
+	Shell chan struct{}
+}
+
+// CursorCloser is the subset of *mongo.Cursor the registry needs.
+type CursorCloser interface {
+	Close(ctx context.Context) error
+}
+
+// Cursor is a server-side cursor kept open between shell requests.
+type Cursor struct {
+	ID       string
+	Cursor   CursorCloser
+	Returned int64
+	lastUsed time.Time
+	mu       sync.Mutex
+}
+
+// Lock serialises use of one cursor (getMore calls must not interleave).
+func (c *Cursor) Lock()   { c.mu.Lock() }
+func (c *Cursor) Unlock() { c.mu.Unlock() }
+
+// ErrTooManyCursors is returned when a session already holds the maximum
+// number of open cursors.
+var ErrTooManyCursors = errors.New("too many open cursors for this session; exhaust or close existing cursors")
+
+// AddCursor registers an open cursor. Idle cursors older than idle are
+// closed first; at most max cursors may be open.
+func (s *Session) AddCursor(c CursorCloser, max int, idle time.Duration) (*Cursor, error) {
+	s.curMu.Lock()
+	defer s.curMu.Unlock()
+	s.reapLocked(idle)
+	if s.cursors == nil {
+		s.cursors = map[string]*Cursor{}
+	}
+	if len(s.cursors) >= max {
+		return nil, ErrTooManyCursors
+	}
+	cur := &Cursor{ID: NewToken()[:22], Cursor: c, lastUsed: time.Now()}
+	s.cursors[cur.ID] = cur
+	return cur, nil
+}
+
+// GetCursor returns an open cursor by id.
+func (s *Session) GetCursor(id string, idle time.Duration) (*Cursor, bool) {
+	s.curMu.Lock()
+	defer s.curMu.Unlock()
+	s.reapLocked(idle)
+	c, ok := s.cursors[id]
+	if ok {
+		c.lastUsed = time.Now()
+	}
+	return c, ok
+}
+
+// CloseCursor closes and forgets a cursor.
+func (s *Session) CloseCursor(id string) {
+	s.curMu.Lock()
+	c, ok := s.cursors[id]
+	delete(s.cursors, id)
+	s.curMu.Unlock()
+	if ok {
+		closeCursor(c)
+	}
+}
+
+// CursorCount returns the number of open cursors.
+func (s *Session) CursorCount() int {
+	s.curMu.Lock()
+	defer s.curMu.Unlock()
+	return len(s.cursors)
+}
+
+func (s *Session) reapLocked(idle time.Duration) {
+	now := time.Now()
+	for id, c := range s.cursors {
+		if now.Sub(c.lastUsed) > idle {
+			delete(s.cursors, id)
+			go closeCursor(c)
+		}
+	}
+}
+
+func (s *Session) closeAllCursors() {
+	s.curMu.Lock()
+	all := s.cursors
+	s.cursors = nil
+	s.curMu.Unlock()
+	for _, c := range all {
+		closeCursor(c)
+	}
+}
+
+func closeCursor(c *Cursor) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = c.Cursor.Close(ctx)
 }
 
 // LastSeen returns the last activity time.
@@ -123,6 +223,9 @@ func (st *Store) Create(sess *Session, replaceSecret string) (string, error) {
 	sess.CreatedAt = now
 	sess.ExpiresAt = now.Add(st.opts.AbsoluteTimeout)
 	sess.lastSeen = now
+	if sess.Shell == nil {
+		sess.Shell = make(chan struct{}, 4)
+	}
 
 	var evicted []*Session
 	st.mu.Lock()
@@ -309,6 +412,7 @@ func (st *Store) closeAll(list []*Session, reason string) {
 }
 
 func (st *Store) disconnect(s *Session, reason string) {
+	s.closeAllCursors()
 	if s.Client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_ = s.Client.Disconnect(ctx)

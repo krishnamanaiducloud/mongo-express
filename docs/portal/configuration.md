@@ -67,6 +67,17 @@ Secrets are never placed in this file; it references mounted files instead.
 | `failuresBeforeLock` / `lockDuration` / `maxLockDuration` | `5` / `5m` / `30m` | Lockout per (profile, auth DB, MongoDB user); doubles on repeat. Only server-confirmed authentication failures count. |
 | `maxConcurrent` / `timeout` | `20` / `15s` | Concurrent login handshakes and per-login deadline. |
 
+## `shell` (in-browser mongosh)
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Serve the shell API (`/api/v1/shell`). |
+| `maxCursors` / `cursorIdleTimeout` | `20` / `10m` | Open server-side cursors per session; idle cursors are closed. |
+| `maxCursorDocuments` | `100000` | Total documents one cursor may return. |
+| `maxBatchDocuments` | `1000` | Documents per `find`/`aggregate`/`getMore` response (also bounded by `query.maxResponseBytes`). |
+| `maxInsertDocuments` | `1000` | Maximum documents in `insertMany` / operations in `bulkWrite`. |
+| `allowDropDatabase` | `false` | Permit `db.dropDatabase()` for SREs (always confirmed by typing the name). |
+
 ## `profiles[]`
 
 | Key | Default | Description |

@@ -47,6 +47,7 @@ type Config struct {
 	Query       QueryConfig    `yaml:"query"`
 	Login       LoginConfig    `yaml:"login"`
 	Audit       AuditConfig    `yaml:"audit"`
+	Shell       ShellConfig    `yaml:"shell"`
 	Profiles    []Profile      `yaml:"profiles"`
 }
 
@@ -145,6 +146,26 @@ type LoginConfig struct {
 type AuditConfig struct {
 	BufferSize int `yaml:"bufferSize"`
 }
+
+// ShellConfig controls the in-browser mongosh shell.
+type ShellConfig struct {
+	// Enabled turns the shell API on (default true).
+	Enabled *bool `yaml:"enabled"`
+	// MaxCursors open per session; CursorIdleTimeout closes unused ones.
+	MaxCursors        int           `yaml:"maxCursors"`
+	CursorIdleTimeout time.Duration `yaml:"cursorIdleTimeout"`
+	// MaxCursorDocuments caps the documents one cursor may return in total.
+	MaxCursorDocuments int64 `yaml:"maxCursorDocuments"`
+	// MaxBatchDocuments caps one find/aggregate/getMore response.
+	MaxBatchDocuments int `yaml:"maxBatchDocuments"`
+	// MaxInsertDocuments caps insertMany and bulkWrite operation counts.
+	MaxInsertDocuments int `yaml:"maxInsertDocuments"`
+	// AllowDropDatabase permits db.dropDatabase() for SREs (default false).
+	AllowDropDatabase bool `yaml:"allowDropDatabase"`
+}
+
+// ShellEnabled reports whether the shell API is enabled.
+func (c *Config) ShellEnabled() bool { return c.Shell.Enabled == nil || *c.Shell.Enabled }
 
 // Profile is an administrator-approved MongoDB deployment. Users can only
 // connect to hosts listed in profiles; they never supply addresses.
@@ -309,6 +330,13 @@ func (c *Config) applyDefaults() {
 	setDuration(&l.Timeout, 15*time.Second)
 
 	setInt(&c.Audit.BufferSize, 1000)
+
+	sh := &c.Shell
+	setInt(&sh.MaxCursors, 20)
+	setDuration(&sh.CursorIdleTimeout, 10*time.Minute)
+	setInt64(&sh.MaxCursorDocuments, 100000)
+	setInt(&sh.MaxBatchDocuments, 1000)
+	setInt(&sh.MaxInsertDocuments, 1000)
 
 	for i := range c.Profiles {
 		p := &c.Profiles[i]

@@ -1,322 +1,339 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { Alert, Button, Content, PageSection, TextInput, Title } from '@patternfly/react-core';
-import { api, ApiError, errorMessage, nsPath, enc } from '../api/client';
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Content,
+  Flex,
+  Form,
+  FormGroup,
+  Label,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
+  ModalVariant,
+  PageSection,
+  Spinner,
+  TextArea,
+  TextInput,
+  Title,
+} from '@patternfly/react-core';
 import { useSession } from '../api/hooks';
-import type { CollectionInfo, DatabaseInfo, DocPage, EJSONDocument, QueryResponse } from '../api/types';
-import { ConfirmDialog } from '../components/Dialogs';
-import { DocumentView } from '../components/DocumentView';
-import { formatBytes } from '../lib/ejson';
-import { parseShell, SHELL_HELP, ShellSyntaxError, type ShellCommand } from '../lib/shell';
+import type { DisplayError, DisplayValue } from '../sandbox/display';
+import { ShellBroker, type ConfirmDecision, type ConfirmRequest } from '../shell/broker';
+import { ShellError, ShellValue } from '../shell/ShellOutput';
 
 interface Entry {
   id: number;
   prompt: string;
-  input: string;
-  output?: ReactNode;
-  error?: string;
+  code: string;
+  outputs: DisplayValue[];
+  error?: DisplayError;
+  running: boolean;
 }
 
-interface PendingConfirm {
-  title: string;
-  body: ReactNode;
-  typeToConfirm?: string;
-  run: () => Promise<ReactNode>;
-  entryId: number;
-}
-
-const DEFAULT_LIMIT = 20;
-
-function idToken(id: unknown): string {
-  const json = JSON.stringify({ _id: id });
-  const bytes = new TextEncoder().encode(json);
-  let bin = '';
-  bytes.forEach((b) => (bin += String.fromCharCode(b)));
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function Docs({ docs }: { docs: EJSONDocument[] }) {
-  if (docs.length === 0) return <span className="portal-shell-muted">(no documents)</span>;
-  return (
-    <>
-      {docs.map((d, i) => (
-        <div key={i} className="portal-shell-doc">
-          <DocumentView doc={d} expandDepth={2} />
-        </div>
-      ))}
-    </>
-  );
-}
-
-function pageOutput(page: DocPage): ReactNode {
-  return (
-    <>
-      <Docs docs={page.documents} />
-      <div className="portal-shell-muted">
-        {page.documents.length} document{page.documents.length === 1 ? '' : 's'} · {page.elapsedMs} ms
-        {page.hasMore && ' · more results available: add .skip()/.limit() or refine the filter'}
-        {page.truncated && ' · truncated by response size limit'}
-      </div>
-    </>
-  );
-}
-
-const json = (v: unknown) => <pre className="portal-shell-pre">{JSON.stringify(v, null, 2)}</pre>;
+type Status = 'starting' | 'ready' | 'failed';
 
 export function ShellPage() {
   const [params] = useSearchParams();
   const session = useSession();
-  const [db, setDb] = useState(params.get('db') || 'test');
-  const [input, setInput] = useState('');
+  const canWrite = session.data?.canWrite ?? false;
+  const profile = session.data?.profile ?? 'portal';
+  const initialDb = params.get('db') || 'test';
+  const hasSession = !!session.data;
+
+  const frameHost = useRef<HTMLDivElement>(null);
+  const broker = useRef<ShellBroker | null>(null);
+  const current = useRef<number | null>(null);
+  const nextId = useRef(1);
+  const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const [generation, setGeneration] = useState(0);
+  const [status, setStatus] = useState<Status>('starting');
+  const [startError, setStartError] = useState<string>();
+  const [prompt, setPrompt] = useState('>');
+  const [version, setVersion] = useState('');
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [histPos, setHistPos] = useState(-1);
   const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState<PendingConfirm>();
-  const nextId = useRef(1);
-  const confirmed = useRef(false);
-  const endRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const canWrite = session.data?.canWrite ?? false;
+  const [completions, setCompletions] = useState<string[]>([]);
+  const [completing, setCompleting] = useState(false);
+  const [confirmReq, setConfirmReq] = useState<{ req: ConfirmRequest; resolve: (d: ConfirmDecision) => void } | null>(null);
+
+  const patch = useCallback((id: number, f: (e: Entry) => Entry) => {
+    setEntries((es) => es.map((e) => (e.id === id ? f(e) : e)));
+  }, []);
+
+  // Start (or restart) the sandbox.
+  useEffect(() => {
+    const host = frameHost.current;
+    if (!host || !hasSession) return;
+    const b = new ShellBroker({
+      canWrite,
+      confirm: (req) => new Promise<ConfirmDecision>((resolve) => setConfirmReq({ req, resolve })),
+      onPrint: (values) => {
+        const id = current.current;
+        if (id !== null) patch(id, (e) => ({ ...e, outputs: [...e.outputs, ...values].slice(-2000) }));
+      },
+      onClear: () => setEntries([]),
+      onExit: () => setGeneration((g) => g + 1),
+    });
+    broker.current = b;
+    setStatus('starting');
+    setStartError(undefined);
+    b.start(host, initialDb, `mongodb://${profile}.portal/`).then(
+      (r) => {
+        setPrompt(r.prompt);
+        setVersion(r.version);
+        setStatus('ready');
+      },
+      (e: unknown) => {
+        setStatus('failed');
+        setStartError(e instanceof Error ? e.message : 'The shell failed to start');
+      },
+    );
+    return () => {
+      b.destroy();
+      broker.current = null;
+    };
+  }, [generation, hasSession, canWrite, initialDb, profile, patch]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: 'end' });
   }, [entries]);
 
-  const update = (id: number, patch: Partial<Entry>) => setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
-
-  const query = (coll: string, body: object) => api<QueryResponse>(`${nsPath(db, coll)}/query`, { method: 'POST', body });
-
-  const requireWrite = () => {
-    if (!canWrite) throw new ApiError(403, 'portal_role_forbidden', 'Your portal role is read-only; this command requires SRE access');
-  };
-
-  const execute = async (cmd: ShellCommand, entryId: number): Promise<ReactNode | null> => {
-    switch (cmd.kind) {
-      case 'help':
-        return <pre className="portal-shell-pre">{SHELL_HELP}</pre>;
-      case 'clear':
-        setEntries([]);
-        return null;
-      case 'currentDb':
-        return db;
-      case 'use':
-        setDb(cmd.db);
-        return `switched to db ${cmd.db}`;
-      case 'showDbs': {
-        const r = await api<{ databases: DatabaseInfo[]; source: string }>('/databases');
-        return (
-          <pre className="portal-shell-pre">
-            {r.databases.map((d) => `${d.name.padEnd(28)} ${r.source === 'privileges' ? '' : formatBytes(d.sizeOnDisk)}`).join('\n') || '(none)'}
-          </pre>
-        );
-      }
-      case 'showCollections': {
-        const r = await api<{ collections: CollectionInfo[] }>(`${nsPath(db)}/collections`);
-        return <pre className="portal-shell-pre">{r.collections.map((c) => c.name).join('\n') || '(none)'}</pre>;
-      }
-      case 'dbStats': {
-        const r = await api<{ stats: unknown }>(`${nsPath(db)}/stats`);
-        return json(r.stats);
-      }
-      case 'collStats': {
-        const r = await api<{ stats: unknown }>(`${nsPath(db, cmd.coll)}/stats`);
-        return json(r.stats);
-      }
-      case 'estimatedCount': {
-        const r = await api<{ stats: { count?: unknown } }>(`${nsPath(db, cmd.coll)}/stats`);
-        return json(r.stats.count);
-      }
-      case 'find': {
-        const r = await query(cmd.coll, {
-          operation: cmd.one ? 'findOne' : 'find',
-          filter: cmd.filter,
-          projection: cmd.projection,
-          sort: cmd.sort,
-          limit: cmd.one ? 1 : cmd.limit || DEFAULT_LIMIT,
-          skip: cmd.skip,
-        });
-        if (cmd.one) return r.page?.documents[0] ? <Docs docs={[r.page.documents[0]]} /> : 'null';
-        return r.page ? pageOutput(r.page) : null;
-      }
-      case 'count': {
-        const r = await query(cmd.coll, { operation: 'countDocuments', filter: cmd.filter });
-        return `${r.count}${r.countCapped ? '+' : ''}`;
-      }
-      case 'aggregate': {
-        const r = await query(cmd.coll, { operation: 'aggregate', pipeline: cmd.pipeline, limit: DEFAULT_LIMIT });
-        return r.page ? pageOutput(r.page) : null;
-      }
-      case 'getIndexes': {
-        const r = await api<{ indexes: unknown[] }>(`${nsPath(db, cmd.coll)}/indexes`);
-        return json(r.indexes);
-      }
-      case 'insertOne': {
-        requireWrite();
-        const r = await api<{ insertedId: unknown }>(`${nsPath(db, cmd.coll)}/documents`, { method: 'POST', body: { document: cmd.document } });
-        return json({ acknowledged: true, insertedId: r.insertedId });
-      }
-      case 'replaceOne': {
-        requireWrite();
-        const r = await api(`${nsPath(db, cmd.coll)}/documents/${enc(idToken(cmd.id))}`, { method: 'PUT', body: { document: cmd.document } });
-        return json(r);
-      }
-      case 'createIndex': {
-        requireWrite();
-        const r = await api<{ name: string }>(`${nsPath(db, cmd.coll)}/indexes`, { method: 'POST', body: { keys: cmd.keys, options: cmd.options } });
-        return JSON.stringify(r.name);
-      }
-      case 'createCollection': {
-        requireWrite();
-        await api(`${nsPath(db)}/collections`, { method: 'POST', body: { name: cmd.name } });
-        return json({ ok: 1 });
-      }
-      case 'deleteOne':
-        requireWrite();
-        setConfirm({
-          entryId,
-          title: 'Delete document',
-          body: `Delete the document with _id ${JSON.stringify(cmd.id)} from ${db}.${cmd.coll}?`,
-          run: async () => json(await api(`${nsPath(db, cmd.coll)}/documents/${enc(idToken(cmd.id))}`, { method: 'DELETE', headers: { 'X-Confirm': 'delete' } })),
-        });
-        return <span className="portal-shell-muted">awaiting confirmation…</span>;
-      case 'dropIndex':
-        requireWrite();
-        setConfirm({
-          entryId,
-          title: 'Drop index',
-          body: `Drop index ${cmd.name} on ${db}.${cmd.coll}?`,
-          typeToConfirm: cmd.name,
-          run: async () => json(await api(`${nsPath(db, cmd.coll)}/indexes/${enc(cmd.name)}`, { method: 'DELETE', headers: { 'X-Confirm': cmd.name } })),
-        });
-        return <span className="portal-shell-muted">awaiting confirmation…</span>;
-      case 'drop':
-        requireWrite();
-        setConfirm({
-          entryId,
-          title: 'Drop collection',
-          body: `Permanently drop ${db}.${cmd.coll} with all documents and indexes?`,
-          typeToConfirm: cmd.coll,
-          run: async () => {
-            await api(nsPath(db, cmd.coll), { method: 'DELETE', headers: { 'X-Confirm': cmd.coll } });
-            return 'true';
-          },
-        });
-        return <span className="portal-shell-muted">awaiting confirmation…</span>;
-    }
-  };
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text || busy) return;
+  const run = async () => {
+    const code = input.trim();
+    if (!code || busy || status !== 'ready' || !broker.current) return;
     setInput('');
-    setHistory((h) => (h[h.length - 1] === text ? h : [...h.slice(-99), text]));
+    setCompletions([]);
+    setHistory((h) => (h[h.length - 1] === code ? h : [...h.slice(-199), code]));
     setHistPos(-1);
     const id = nextId.current++;
-    setEntries((es) => [...es, { id, prompt: `${db}>`, input: text }]);
+    current.current = id;
+    setEntries((es) => [...es, { id, prompt, code, outputs: [], running: true }].slice(-300));
     setBusy(true);
-    try {
-      const cmd = parseShell(text);
-      const out = await execute(cmd, id);
-      if (out !== null) update(id, { output: out });
-    } catch (err) {
-      update(id, { error: err instanceof ShellSyntaxError ? `SyntaxError: ${err.message}` : errorMessage(err) });
-    } finally {
-      setBusy(false);
-      inputRef.current?.focus();
-    }
+    const r = await broker.current.evaluate(code);
+    current.current = null;
+    setBusy(false);
+    setPrompt(r.prompt || prompt);
+    patch(id, (e) => ({
+      ...e,
+      running: false,
+      outputs: r.ok && r.value && !(r.value.type === null && r.value.value === 'undefined') ? [...e.outputs, r.value] : e.outputs,
+      error: r.ok ? undefined : r.error,
+    }));
+    inputRef.current?.focus();
   };
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowUp' && history.length) {
+  const complete = async () => {
+    if (!broker.current || status !== 'ready' || completing) return;
+    setCompleting(true);
+    const list = await broker.current.complete(input).finally(() => setCompleting(false));
+    if (list.length === 1) {
+      setInput(list[0]);
+      setCompletions([]);
+      return;
+    }
+    // Extend to the longest common prefix, then offer the choices.
+    let prefix = list[0] ?? '';
+    for (const c of list) while (!c.startsWith(prefix)) prefix = prefix.slice(0, -1);
+    if (prefix.length > input.length) setInput(prefix);
+    setCompletions(list);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void run();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      void complete();
+    } else if (e.key === 'Escape') {
+      setCompletions([]);
+    } else if (e.key === 'ArrowUp' && el.selectionStart === 0 && history.length) {
       e.preventDefault();
       const pos = histPos < 0 ? history.length - 1 : Math.max(0, histPos - 1);
       setHistPos(pos);
       setInput(history[pos]);
-    } else if (e.key === 'ArrowDown' && histPos >= 0) {
+    } else if (e.key === 'ArrowDown' && histPos >= 0 && el.selectionEnd === el.value.length) {
       e.preventDefault();
       const pos = histPos + 1;
-      if (pos >= history.length) {
-        setHistPos(-1);
-        setInput('');
-      } else {
-        setHistPos(pos);
-        setInput(history[pos]);
-      }
+      setHistPos(pos >= history.length ? -1 : pos);
+      setInput(pos >= history.length ? '' : history[pos]);
     } else if (e.key === 'l' && e.ctrlKey) {
       e.preventDefault();
       setEntries([]);
     }
   };
 
+  const reset = () => {
+    setEntries((es) => es.map((x) => (x.running ? { ...x, running: false, error: { name: 'Interrupted', message: 'Execution was interrupted and the shell was restarted' } } : x)));
+    setBusy(false);
+    current.current = null;
+    setGeneration((g) => g + 1);
+  };
+
   return (
     <PageSection>
-      <Title headingLevel="h1" className="pf-v6-u-mb-sm">
-        Shell
-      </Title>
-      <Content component="p" className="pf-v6-u-mb-md">
-        mongosh-style commands, executed through the portal as <strong>{session.data?.mongoUser}</strong>. Type <code>help</code> for the
-        supported commands. JavaScript is not evaluated.
+      <Flex alignItems={{ default: 'alignItemsCenter' }} className="pf-v6-u-mb-sm">
+        <Title headingLevel="h1">Shell</Title>
+        {version && <Label isCompact>mongosh {version}</Label>}
+        <Flex className="pf-v6-u-ml-auto" gap={{ default: 'gapSm' }}>
+          <Button variant="secondary" onClick={() => setEntries([])}>
+            Clear
+          </Button>
+          <Button variant={busy ? 'warning' : 'secondary'} onClick={reset}>
+            {busy ? 'Interrupt' : 'Restart shell'}
+          </Button>
+        </Flex>
+      </Flex>
+      <Content component="p" className="pf-v6-u-mb-sm">
+        The real mongosh runtime, running isolated in your browser as <strong>{session.data?.mongoUser}</strong>. JavaScript,
+        variables, loops, <code>printjson</code> and Tab completion work as in mongosh; every database operation goes through the portal
+        and is checked against your role and MongoDB privileges.
       </Content>
-      {!canWrite && <Alert variant="info" isInline isPlain className="pf-v6-u-mb-sm" title="Your portal role is read-only: write commands are rejected." />}
-      <div className="portal-shell" onClick={() => inputRef.current?.focus()}>
+      {!canWrite && (
+        <Alert variant="info" isInline isPlain className="pf-v6-u-mb-sm" title="Read-only portal role: write operations are rejected." />
+      )}
+      {status === 'failed' && (
+        <Alert variant="danger" isInline className="pf-v6-u-mb-sm" title={startError ?? 'The shell failed to start'}>
+          <Button variant="link" isInline onClick={() => setGeneration((g) => g + 1)}>
+            Try again
+          </Button>
+        </Alert>
+      )}
+      <div ref={frameHost} />
+      <div className="portal-shell" onClick={(e) => { if (e.target === e.currentTarget) inputRef.current?.focus(); }}>
+        {status === 'starting' && (
+          <div className="portal-shell-muted">
+            <Spinner size="sm" aria-label="Starting" /> Starting mongoshÃ¢â‚¬Â¦
+          </div>
+        )}
         <div role="log" aria-live="polite" aria-label="Shell output">
           {entries.map((en) => (
             <div key={en.id} className="portal-shell-entry">
               <div>
-                <span className="portal-shell-prompt">{en.prompt}</span> {en.input}
+                <span className="portal-shell-prompt">{en.prompt}</span> <span className="portal-shell-code">{en.code}</span>
               </div>
-              {en.output !== undefined && <div className="portal-shell-out">{en.output}</div>}
-              {en.error && <div className="portal-shell-error">{en.error}</div>}
+              {en.outputs.map((o, i) => (
+                <div key={i} className="portal-shell-out">
+                  <ShellValue d={o} />
+                </div>
+              ))}
+              {en.error && (
+                <div className="portal-shell-out">
+                  <ShellError e={en.error} />
+                </div>
+              )}
+              {en.running && <Spinner size="sm" aria-label="Running" />}
             </div>
           ))}
         </div>
-        <form onSubmit={(e) => void submit(e)} className="portal-shell-input" aria-label="Shell command">
+        <div className="portal-shell-input">
           <label htmlFor="shell-input" className="portal-shell-prompt">
-            {db}&gt;
+            {prompt}
           </label>
-          <TextInput
+          <TextArea
             id="shell-input"
             ref={inputRef}
             value={input}
-            onChange={(_e, v) => setInput(v)}
+            onChange={(_e, v) => {
+              setInput(v);
+              if (completions.length) setCompletions([]);
+            }}
             onKeyDown={onKeyDown}
-            autoComplete="off"
+            autoResize
+            rows={1}
+            resizeOrientation="vertical"
             spellCheck={false}
-            aria-label="Command"
-            placeholder='db.collection.find({ field: "value" })'
-            isDisabled={busy}
-            autoFocus
+            autoComplete="off"
+            aria-label="mongosh command. Enter runs, Shift+Enter inserts a new line, Tab completes."
+            placeholder={status === 'ready' ? 'db.collection.find({})' : ''}
+            isDisabled={status !== 'ready'}
+            className="portal-mono"
           />
-          <Button type="submit" variant="primary" isDisabled={busy || !input.trim()} isLoading={busy}>
+          <Button onClick={() => void run()} isDisabled={busy || status !== 'ready' || !input.trim()} isLoading={busy}>
             Run
           </Button>
-        </form>
+        </div>
+        {completing && <div className="portal-shell-muted">completing…</div>}
+        {completions.length > 1 && (
+          <div className="portal-shell-completions" role="listbox" aria-label="Completions">
+            {completions.map((c) => (
+              <button
+                key={c}
+                type="button"
+                role="option"
+                aria-selected={false}
+                className="portal-shell-completion"
+                onClick={() => {
+                  setInput(c);
+                  setCompletions([]);
+                  inputRef.current?.focus();
+                }}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        )}
         <div ref={endRef} />
       </div>
-      {confirm && (
-        <ConfirmDialog
-          title={confirm.title}
-          body={confirm.body}
-          typeToConfirm={confirm.typeToConfirm}
-          confirmLabel={confirm.title}
-          onConfirm={async () => {
-            confirmed.current = true;
-            try {
-              const out = await confirm.run();
-              update(confirm.entryId, { output: out });
-            } catch (err) {
-              update(confirm.entryId, { output: undefined, error: errorMessage(err) });
-            }
-          }}
-          onClose={() => {
-            if (!confirmed.current) update(confirm.entryId, { output: <span className="portal-shell-muted">cancelled</span> });
-            confirmed.current = false;
-            setConfirm(undefined);
+      {confirmReq && (
+        <ShellConfirm
+          req={confirmReq.req}
+          onDone={(d) => {
+            confirmReq.resolve(d);
+            setConfirmReq(null);
           }}
         />
       )}
     </PageSection>
+  );
+}
+
+function ShellConfirm({ req, onDone }: { req: ConfirmRequest; onDone: (d: ConfirmDecision) => void }) {
+  const [typed, setTyped] = useState('');
+  const [remember, setRemember] = useState(false);
+  const ready = !req.typeToConfirm || typed === req.typeToConfirm;
+  return (
+    <Modal variant={ModalVariant.small} isOpen onClose={() => onDone({ confirmed: false })} aria-labelledby="shell-confirm-title">
+      <ModalHeader title={req.title} labelId="shell-confirm-title" titleIconVariant="warning" />
+      <ModalBody>
+        <Content component="p">{req.summary}</Content>
+        <Content component="small">Requested by a command running in the shell.</Content>
+        {req.typeToConfirm && (
+          <Form onSubmit={(e) => { e.preventDefault(); if (ready) onDone({ confirmed: true }); }} className="pf-v6-u-mt-md">
+            <FormGroup label={`Type "${req.typeToConfirm}" to confirm`} fieldId="shell-confirm-input">
+              <TextInput id="shell-confirm-input" value={typed} onChange={(_e, v) => setTyped(v)} autoComplete="off" autoFocus />
+            </FormGroup>
+          </Form>
+        )}
+        {req.allowRemember && (
+          <Checkbox
+            id="shell-confirm-remember"
+            className="pf-v6-u-mt-md"
+            label={`Don't ask again for ${req.op} in this shell session`}
+            isChecked={remember}
+            onChange={(_e, v) => setRemember(v)}
+          />
+        )}
+      </ModalBody>
+      <ModalFooter>
+        <Button variant="danger" isDisabled={!ready} onClick={() => onDone({ confirmed: true, remember })}>
+          Run {req.op}
+        </Button>
+        <Button variant="link" onClick={() => onDone({ confirmed: false })}>
+          Cancel
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }

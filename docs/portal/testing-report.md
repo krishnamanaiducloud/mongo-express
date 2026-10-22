@@ -1,5 +1,36 @@
 # Testing and validation report
 
+## Release 0.2.0 — in-browser mongosh shell
+
+0.2.0 replaces the 0.1.0 mongosh-style command grammar with the real mongosh
+runtime (`@mongosh/browser-runtime-core` 5.11.2) running in an opaque-origin
+sandbox and worker (see architecture.md). Results for 0.2.0:
+
+| Area | Result |
+| --- | --- |
+| Go unit tests (race) | pass; new: shell authorization (developer writes, unsupported ops, denied/admin commands, JS operators, write stages, cursor options, CSRF), destructive confirmation, command classification and validation, cursor registry, sandbox CSP, ETag/gzip static serving |
+| Web tests (Vitest) | **27/27**; new: the real mongosh runtime driven through `PortalServiceProvider` (find modifiers and BSON types, JS loops across getMore, printjson, toArray/it/aggregate/count/show, writes, createIndex names, refused connections/sessions/watch, error codes, autocompletion) and broker policy (allowlist, read-only role, typed drop confirmation, remembered bulk confirmations, destructive runCommand) |
+| Integration (real MongoDB) | **10/10**; new `TestShellOperations` (non-TLS and TLS): insertMany, server-side cursor paging with getMore and closure, aggregate, countDocuments, distinct, explain, dbStats, createUser refused, unconfirmed vs confirmed updateMany, bulkWrite, findOneAndUpdate, unique index + duplicate key, confirmed dropIndexes, dropCollection; SRE with read-only MongoDB user refused by MongoDB; developer reads allowed, writes refused |
+| Browser e2e (Chromium 1.63, `test/e2e`) | **all checks pass**: find/BSON rendering, JS loop over 30 docs = 435, printjson, aggregate, show collections, developer write/`$out`/`$where`/`shutdown`/`new Mongo()` refused; sandbox isolation: no cookies, parent DOM, localStorage, IndexedDB; fetch, XHR and external importScripts blocked; main page CSP has no eval; sandbox CSP opaque origin + `connect-src 'none'`; Tab completion; SRE insertMany/updateOne, deleteMany cancel → no change, confirm → deleted, drop requires typing the name, `while(true){}` interrupted and shell recovers |
+| Container smoke | 73/73 (production and debug, 3 arbitrary UIDs, read-only rootfs) |
+| Scans | govulncheck 0 affecting; gosec 0; npm audit 0 (after overriding `basic-ftp` to 6.2.2, GHSA-c475-qrg2-pj4r, build-time-only transitive dependency of `@mongosh/types`, not in the browser bundle); Trivy/Grype: 0 Critical/High/Medium/Low in both images, 1 Unknown (GO-2026-5932, below); gitleaks: no leaks |
+
+Defects found by the new tests and fixed: `distinct` results were serialised
+as Binary instead of an array (integration test); runaway scripts froze the
+portal tab because the sandboxed iframe shared the page's thread (browser
+e2e; runtime moved into a worker); the TypeScript-based autocompleter did not
+work in the browser and added ~11 MB (browser e2e; classic completer selected
+and the module stubbed, bundle 13.5 MB → 2.5 MB).
+
+Known limitations of the shell: no connections to other deployments,
+`db.auth()`, sessions/transactions, change streams, client-side encryption,
+`load()`, legacy Bulk API; `dropDatabase` off by default. Sessions remain
+per pod.
+
+---
+
+## Release 0.1.0
+
 Release: **0.1.0** · Date: 2026-10-22 · Environment: Windows 10 + WSL2 Ubuntu,
 Docker 29.6, Go 1.27.3 (Chainguard), Node 24/26, MongoDB 8.0 test containers.
 No OpenShift cluster was available; cluster-level items are listed under

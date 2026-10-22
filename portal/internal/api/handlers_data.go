@@ -507,7 +507,7 @@ func (s *Server) handleFindDocuments(w http.ResponseWriter, r *http.Request, rc 
 
 func (s *Server) runFind(w http.ResponseWriter, r *http.Request, rc *reqCtx, db, coll string, spec *findSpec, withCount bool) {
 	c := rc.sess.Client.Database(db).Collection(coll)
-	batch := min(spec.limit+1, 1000) // limit is clamped to query.maxLimit, so batch is in [2, 1000]
+	batch := min(spec.limit+1, 1000)                                                            // limit is clamped to query.maxLimit, so batch is in [2, 1000]
 	fo := options.Find().SetLimit(spec.limit + 1).SetSkip(spec.skip).SetBatchSize(int32(batch)) // #nosec G115 -- bounded above
 	if len(spec.projection) > 0 {
 		fo.SetProjection(spec.projection)

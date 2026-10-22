@@ -449,6 +449,98 @@ func TestDecodeIDRejectsOperators(t *testing.T) {
 	}
 }
 
+func TestShellAuthorization(t *testing.T) {
+	h := newHarness(t, nil)
+	cookie, csrf := h.login("dana", "devs")
+	shell := func(op, args string, hdr ...reqOpt) *httptest.ResponseRecorder {
+		opts := append([]reqOpt{as("dana", "devs"), withCookie(cookie), withHeader("X-CSRF-Token", csrf)}, hdr...)
+		return h.do("POST", "/api/v1/shell", map[string]string{"op": op, "args": args}, opts...)
+	}
+	// Developers cannot run any write operation, with or without confirmation.
+	for _, op := range []string{"insertOne", "insertMany", "updateOne", "updateMany", "replaceOne", "deleteOne",
+		"deleteMany", "findOneAndUpdate", "findOneAndReplace", "findOneAndDelete", "bulkWrite", "createIndexes",
+		"dropIndexes", "createCollection", "dropCollection", "dropDatabase", "renameCollection"} {
+		w := shell(op, `{"db":"app","coll":"orders"}`, withHeader("X-Confirm", op))
+		if w.Code != 403 || errCode(t, w) != "portal_role_forbidden" {
+			t.Errorf("developer %s: %d %s", op, w.Code, w.Body)
+		}
+	}
+	// Unknown operations (e.g. connecting elsewhere, authenticating as someone else).
+	for _, op := range []string{"getNewConnection", "authenticate", "eval", "watch", "startSession"} {
+		if w := shell(op, `{}`); w.Code != 400 || errCode(t, w) != "unsupported_operation" {
+			t.Errorf("%s: %d", op, w.Code)
+		}
+	}
+	// Denied and admin commands through runCommand (rejected before MongoDB is contacted).
+	for _, cmd := range []string{`{"shutdown":1}`, `{"createUser":"x","pwd":"y","roles":[]}`, `{"eval":"1"}`,
+		`{"mapReduce":"orders"}`, `{"replSetStepDown":60}`, `{"find":"orders"}`, `{"currentOp":1}`, `{"collMod":"orders"}`} {
+		w := shell("runCommand", `{"db":"app","command":`+cmd+`}`)
+		if w.Code != 403 || errCode(t, w) != "operation_not_permitted" {
+			t.Errorf("runCommand %s: %d %s", cmd, w.Code, w.Body)
+		}
+	}
+	// JavaScript and write stages are rejected in reads.
+	for _, c := range [][2]string{
+		{"find", `{"db":"app","coll":"orders","filter":{"$where":"sleep(1000)"}}`},
+		{"countDocuments", `{"db":"app","coll":"orders","filter":{"$expr":{"$function":{"body":"f","args":[],"lang":"js"}}}}`},
+		{"aggregate", `{"db":"app","coll":"orders","pipeline":[{"$out":"stolen"}]}`},
+		{"aggregate", `{"db":"app","coll":"orders","pipeline":[{"$merge":{"into":"x"}}]}`},
+		{"explain", `{"db":"app","coll":"orders","kind":"aggregate","pipeline":[{"$out":"x"}]}`},
+		{"runCommand", `{"db":"app","command":{"count":"orders","query":{"$where":"1"}}}`},
+	} {
+		if w := shell(c[0], c[1]); w.Code != 400 {
+			t.Errorf("%s %s: %d %s", c[0], c[1], w.Code, w.Body)
+		}
+	}
+	// Forbidden cursor options.
+	if w := shell("find", `{"db":"app","coll":"orders","options":{"noCursorTimeout":true}}`); w.Code != 403 {
+		t.Errorf("noCursorTimeout: %d", w.Code)
+	}
+	// Malformed arguments.
+	if w := shell("find", `{"db":"a.b","coll":"x"}`); w.Code != 400 || errCode(t, w) != "invalid_arguments" {
+		t.Errorf("bad db: %d", w.Code)
+	}
+	// CSRF still applies.
+	w := h.do("POST", "/api/v1/shell", map[string]string{"op": "find", "args": `{}`}, as("dana", "devs"), withCookie(cookie))
+	if w.Code != 403 || errCode(t, w) != "csrf_failed" {
+		t.Errorf("shell without csrf: %d", w.Code)
+	}
+}
+
+func TestShellDestructiveConfirmationForSRE(t *testing.T) {
+	h := newHarness(t, nil)
+	cookie, csrf := h.login("sam", "sres")
+	for _, op := range []string{"updateMany", "deleteMany", "bulkWrite", "dropIndexes", "dropCollection", "dropDatabase", "renameCollection"} {
+		for _, confirm := range []string{"", "yes", "deleteOne"} {
+			w := h.do("POST", "/api/v1/shell", map[string]string{"op": op, "args": `{"db":"app","coll":"orders"}`},
+				as("sam", "sres"), withCookie(cookie), withHeader("X-CSRF-Token", csrf), withHeader("X-Confirm", confirm))
+			if w.Code != http.StatusPreconditionRequired {
+				t.Errorf("%s confirm=%q: %d", op, confirm, w.Code)
+			}
+		}
+	}
+	// dropDatabase is additionally disabled by default.
+	w := h.do("POST", "/api/v1/shell", map[string]string{"op": "dropDatabase", "args": `{"db":"app"}`},
+		as("sam", "sres"), withCookie(cookie), withHeader("X-CSRF-Token", csrf), withHeader("X-Confirm", "dropDatabase"))
+	if w.Code != 403 {
+		t.Errorf("dropDatabase disabled by default: %d %s", w.Code, w.Body)
+	}
+	// Writes to system collections and local/config are refused.
+	for _, args := range []string{`{"db":"admin","coll":"system.users","document":{"a":1}}`, `{"db":"local","coll":"x","document":{"a":1}}`} {
+		w := h.do("POST", "/api/v1/shell", map[string]string{"op": "insertOne", "args": args},
+			as("sam", "sres"), withCookie(cookie), withHeader("X-CSRF-Token", csrf))
+		if w.Code != 403 {
+			t.Errorf("protected namespace %s: %d", args, w.Code)
+		}
+	}
+	// Destructive runCommand requires confirmation.
+	w = h.do("POST", "/api/v1/shell", map[string]string{"op": "runCommand", "args": `{"db":"app","command":{"dropIndexes":"orders","index":"a_1"}}`},
+		as("sam", "sres"), withCookie(cookie), withHeader("X-CSRF-Token", csrf))
+	if w.Code != 403 {
+		t.Errorf("unconfirmed runCommand dropIndexes: %d", w.Code)
+	}
+}
+
 // TestServerWithUI builds the server exactly as main does (with the UI
 // handler) to catch route registration conflicts.
 func TestServerWithUI(t *testing.T) {

@@ -30,6 +30,11 @@ MongoDB (TLS or plaintext per profile) and portal ↔ Kubernetes API (TLS).
 | Server-side JavaScript | `$where`, `$function`, `$accumulator`, Code values rejected at any depth; no `runCommand`/`eval` API; shell grammar never evaluates JS | `TestFilterRejectsDangerousInput`, `shell.test.ts` |
 | SSRF via connection settings | Hosts only from admin profiles; login accepts a profile *name*; URIs with credentials/TLS/auth options rejected | `TestLoginFailureAndLockout`, `config_test` |
 | TLS downgrade / MITM to MongoDB | Explicit mode, no fallback, verification cannot be disabled, hostname checked, custom CA | integration `TestTLSAuthentication` (wrong CA, hostname mismatch, both downgrade directions) |
+| Malicious or pasted shell script steals session / CSRF token | mongosh runs in an opaque-origin sandbox + worker: no cookies, storage, DOM access or network (`connect-src 'none'`); only the broker can call the API | browser e2e (`test/e2e`): cookie/storage/IndexedDB/parent access, fetch, XHR, importScripts all blocked |
+| Shell script performs destructive operations silently | Broker confirmation dialogs (typed for drops), server-required `X-Confirm`, portal role and MongoDB privileges | `TestShellDestructiveConfirmationForSRE`, broker tests, e2e cancel/confirm |
+| Shell used to reach other hosts or switch identity | `Mongo()`/`connect()`/`db.auth()` unsupported in the provider; no such server operations exist | provider tests, e2e "connecting elsewhere refused" |
+| Arbitrary commands through `db.runCommand` | Server-side command allowlist; admin commands SRE-only; JS denied inside commands | `TestClassifyCommand`, `TestShellAuthorization`, integration `TestShellOperations` |
+| Runaway script freezes the portal | Runtime in a dedicated worker; Interrupt terminates it | e2e "recovers after interrupting an infinite loop" |
 | **Repudiation** | Structured audit events for logins, denials, writes with SSO + MongoDB identities and request id | `audit_test`; log review |
 | **Information disclosure**: credentials | Passwords never logged/stored/returned; telemetry has no query/document content; hosts hidden from UI | `TestLoginSessionCookieAndLogout`, smoke test "password not in logs" |
 | Error leakage | Classified, generic error messages; no stack traces to clients | `mongoconn` classification tests |
@@ -57,3 +62,10 @@ MongoDB (TLS or plaintext per profile) and portal ↔ Kubernetes API (TLS).
 6. The debug image contains a shell and network tools; restrict its use to
    troubleshooting windows.
 7. Base `origin-oauth-proxy` is a community image; use the Red Hat build in production.
+8. The shell sandbox page needs `'unsafe-eval'` to evaluate JavaScript. It is
+   confined to an opaque origin with no network access; a sandbox escape would
+   require a browser vulnerability. A user can still do, through the shell,
+   anything their own portal role and MongoDB privileges allow (by design).
+9. The sandbox could navigate itself to another same-origin URL (the portal
+   page's `frame-src 'self'` prevents other origins); query strings are not
+   logged by the portal.

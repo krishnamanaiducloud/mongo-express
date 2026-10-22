@@ -341,7 +341,10 @@ func TestDeveloperReadOnlyEndToEnd(t *testing.T) {
 		t.Fatalf("Decimal128 must round-trip as canonical Extended JSON: %v", first["total"])
 	}
 
-	for _, req := range []struct{ m, p string; b any }{
+	for _, req := range []struct {
+		m, p string
+		b    any
+	}{
 		{"POST", base("app", "orders") + "/documents", map[string]string{"document": `{"x":1}`}},
 		{"POST", base("app", "orders") + "/indexes", map[string]string{"keys": `{"x":1}`}},
 		{"DELETE", base("app", "orders"), nil},
@@ -478,6 +481,165 @@ func TestQueryLimitsAndTimeouts(t *testing.T) {
 	} else if code != 504 && code != 400 {
 		t.Fatalf("timeout: %d %v", code, m)
 	}
+}
+
+// shellCall runs one /api/v1/shell operation and decodes the canonical
+// Extended JSON result.
+func (c *client) shellCall(t *testing.T, op, args string, confirm string) (int, bson.M, map[string]any) {
+	t.Helper()
+	hdr := []string{}
+	if confirm != "" {
+		hdr = append(hdr, "X-Confirm", confirm)
+	}
+	code, m := c.do("POST", "/api/v1/shell", map[string]string{"op": op, "args": args}, hdr...)
+	if code != 200 {
+		return code, nil, m
+	}
+	var res bson.M
+	if err := bson.UnmarshalExtJSON([]byte(m["result"].(string)), true, &res); err != nil {
+		t.Fatalf("%s: decode result: %v", op, err)
+	}
+	return code, res, m
+}
+
+// alen returns the length of a BSON array value, or -1 if it is not an array.
+func alen(v any) int {
+	a, ok := v.(bson.A)
+	if !ok {
+		return -1
+	}
+	return len(a)
+}
+
+// field reads a key from a decoded document (bson.D or bson.M).
+func field(v any, key string) any {
+	switch d := v.(type) {
+	case bson.M:
+		return d[key]
+	case bson.D:
+		for _, e := range d {
+			if e.Key == key {
+				return e.Value
+			}
+		}
+	}
+	return nil
+}
+
+func TestShellOperations(t *testing.T) {
+	for _, prof := range []func(*testing.T) config.Profile{rsProfile, tlsProfile} {
+		pr := prof(t)
+		t.Run(pr.Name, func(t *testing.T) {
+			p := newPortal(t, pr)
+			sre := p.login("sam", "sres", pr.Name, "writer", "writer-pw")
+			coll := fmt.Sprintf("sh_%d", time.Now().UnixNano())
+			ns := `"db":"scratch","coll":"` + coll + `"`
+
+			docs := make([]string, 0, 50)
+			for i := 0; i < 50; i++ {
+				docs = append(docs, fmt.Sprintf(`{"n":{"$numberInt":"%d"},"g":"%s"}`, i, []string{"a", "b"}[i%2]))
+			}
+			code, res, m := sre.shellCall(t, "insertMany", `{`+ns+`,"documents":[`+strings.Join(docs, ",")+`]}`, "")
+			if code != 200 || alen(res["insertedIds"]) != 50 {
+				t.Fatalf("insertMany: %d %v", code, m)
+			}
+
+			// Server-side cursor paging.
+			code, res, m = sre.shellCall(t, "find", `{`+ns+`,"filter":{},"options":{"sort":{"n":1},"batchSize":{"$numberInt":"20"}}}`, "")
+			if code != 200 || alen(res["batch"]) != 20 || res["exhausted"] == true || res["id"] == "" {
+				t.Fatalf("find first batch: %d %v %v", code, m, res["exhausted"])
+			}
+			id, _ := res["id"].(string)
+			total := 20
+			for i := 0; i < 5 && res["exhausted"] != true; i++ {
+				code, res, m = sre.shellCall(t, "getMore", `{"id":"`+id+`","batchSize":{"$numberInt":"20"}}`, "")
+				if code != 200 {
+					t.Fatalf("getMore: %d %v", code, m)
+				}
+				total += alen(res["batch"])
+			}
+			if total != 50 || res["exhausted"] != true {
+				t.Fatalf("cursor returned %d documents, exhausted=%v", total, res["exhausted"])
+			}
+			if code, _, _ = sre.shellCall(t, "getMore", `{"id":"`+id+`"}`, ""); code != 400 {
+				t.Fatalf("exhausted cursor must be closed: %d", code)
+			}
+
+			code, res, _ = sre.shellCall(t, "aggregate", `{`+ns+`,"pipeline":[{"$group":{"_id":"$g","c":{"$sum":1}}},{"$sort":{"_id":1}}]}`, "")
+			if code != 200 || alen(res["batch"]) != 2 {
+				t.Fatalf("aggregate: %d %v", code, res)
+			}
+			if code, res, _ = sre.shellCall(t, "countDocuments", `{`+ns+`,"filter":{"g":"a"}}`, ""); code != 200 || res["n"] != int64(25) {
+				t.Fatalf("countDocuments: %d %v", code, res)
+			}
+			if code, res, _ = sre.shellCall(t, "distinct", `{`+ns+`,"key":"g","filter":{}}`, ""); code != 200 || alen(res["values"]) != 2 {
+				t.Fatalf("distinct: %d %v", code, res)
+			}
+			if code, res, _ = sre.shellCall(t, "explain", `{`+ns+`,"kind":"find","filter":{"n":{"$gt":{"$numberInt":"10"}}},"verbosity":"queryPlanner"}`, ""); code != 200 || res["result"] == nil {
+				t.Fatalf("explain: %d %v", code, res)
+			}
+			if code, res, _ = sre.shellCall(t, "runCommand", `{"db":"scratch","command":{"dbStats":1}}`, ""); code != 200 {
+				t.Fatalf("runCommand dbStats: %d %v", code, res)
+			}
+			if code, _, m = sre.shellCall(t, "runCommand", `{"db":"admin","command":{"createUser":"evil","pwd":"x","roles":["root"]}}`, ""); code != 403 {
+				t.Fatalf("createUser must be refused: %d %v", code, m)
+			}
+
+			// Confirmed bulk operations.
+			if code, _, _ = sre.shellCall(t, "updateMany", `{`+ns+`,"filter":{"g":"a"},"update":{"$set":{"flag":true}}}`, ""); code != 428 {
+				t.Fatalf("unconfirmed updateMany: %d", code)
+			}
+			code, res, m = sre.shellCall(t, "updateMany", `{`+ns+`,"filter":{"g":"a"},"update":{"$set":{"flag":true}}}`, "updateMany")
+			if code != 200 || res["modifiedCount"] != int64(25) {
+				t.Fatalf("updateMany: %d %v %v", code, res, m)
+			}
+			code, res, m = sre.shellCall(t, "bulkWrite", `{`+ns+`,"operations":[{"insertOne":{"document":{"n":{"$numberInt":"100"}}}},{"deleteMany":{"filter":{"g":"b"}}}]}`, "bulkWrite")
+			if code != 200 || res["insertedCount"] != int64(1) || res["deletedCount"] != int64(25) {
+				t.Fatalf("bulkWrite: %d %v %v", code, res, m)
+			}
+			code, res, m = sre.shellCall(t, "findOneAndUpdate", `{`+ns+`,"filter":{"n":{"$numberInt":"100"}},"update":{"$set":{"z":1}},"options":{"returnDocument":"after"}}`, "")
+			if code != 200 || field(res["value"], "z") != int32(1) {
+				t.Fatalf("findOneAndUpdate: %d %v %v", code, res, m)
+			}
+
+			// Indexes.
+			if code, _, m = sre.shellCall(t, "createIndexes", `{`+ns+`,"specs":[{"key":{"n":1},"name":"n_1","unique":true}]}`, ""); code != 200 {
+				t.Fatalf("createIndexes: %d %v", code, m)
+			}
+			if code, _, m = sre.shellCall(t, "insertOne", `{`+ns+`,"document":{"n":{"$numberInt":"100"}}}`, ""); code != 409 || errField(m, "codeName") == nil {
+				t.Fatalf("duplicate key: %d %v", code, m)
+			}
+			if code, _, _ = sre.shellCall(t, "runCommand", `{"db":"scratch","command":{"dropIndexes":"`+coll+`","index":"n_1"}}`, ""); code != 403 {
+				t.Fatalf("unconfirmed dropIndexes via runCommand: %d", code)
+			}
+			if code, _, m = sre.shellCall(t, "runCommand", `{"db":"scratch","command":{"dropIndexes":"`+coll+`","index":"n_1"}}`, "runCommand"); code != 200 {
+				t.Fatalf("dropIndexes: %d %v", code, m)
+			}
+			if code, _, m = sre.shellCall(t, "dropCollection", `{`+ns+`}`, "dropCollection"); code != 200 {
+				t.Fatalf("dropCollection: %d %v", code, m)
+			}
+		})
+	}
+	// SRE portal role with a read-only MongoDB user: MongoDB refuses the write.
+	p := newPortal(t, rsProfile(t))
+	ro := p.login("sam", "sres", "rs", "reader", "reader-pw")
+	code, _, m := ro.shellCall(t, "insertOne", `{"db":"app","coll":"orders","document":{"x":1}}`, "")
+	if code != 403 || errField(m, "codeName") != "Unauthorized" {
+		t.Fatalf("MongoDB must deny the write: %d %v", code, m)
+	}
+	// Developer: reads work, writes are refused by the portal.
+	dev := p.login("dana", "devs", "rs", "writer", "writer-pw")
+	if code, _, m = dev.shellCall(t, "find", `{"db":"app","coll":"orders","filter":{}}`, ""); code != 200 {
+		t.Fatalf("developer find: %d %v", code, m)
+	}
+	if code, _, _ = dev.shellCall(t, "insertOne", `{"db":"app","coll":"orders","document":{"x":1}}`, ""); code != 403 {
+		t.Fatalf("developer insert: %d", code)
+	}
+}
+
+func errField(m map[string]any, key string) any {
+	e, _ := m["error"].(map[string]any)
+	return e[key]
 }
 
 func adminClient(t *testing.T) *mongo.Client {

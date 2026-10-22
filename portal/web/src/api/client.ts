@@ -15,12 +15,16 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly requestId?: string;
+  readonly mongoCode?: number;
+  readonly codeName?: string;
 
-  constructor(status: number, code: string, message: string, requestId?: string) {
+  constructor(status: number, code: string, message: string, requestId?: string, mongoCode?: number, codeName?: string) {
     super(message);
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.mongoCode = mongoCode;
+    this.codeName = codeName;
   }
 }
 
@@ -77,8 +81,8 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     data = {};
   }
   if (!res.ok) {
-    const err = (data as { error?: { code?: string; message?: string; requestId?: string } }).error;
-    const apiErr = new ApiError(res.status, err?.code ?? `http_${res.status}`, err?.message ?? res.statusText, err?.requestId);
+    const err = (data as { error?: { code?: string; message?: string; requestId?: string; mongoCode?: number; codeName?: string } }).error;
+    const apiErr = new ApiError(res.status, err?.code ?? `http_${res.status}`, err?.message ?? res.statusText, err?.requestId, err?.mongoCode, err?.codeName);
     if (isSessionError(apiErr)) window.dispatchEvent(new CustomEvent(SESSION_LOST_EVENT, { detail: apiErr.code }));
     if (apiErr.code === 'sso_required') window.dispatchEvent(new CustomEvent(SSO_LOST_EVENT));
     throw apiErr;
