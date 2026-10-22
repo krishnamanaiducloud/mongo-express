@@ -11,7 +11,7 @@ database, no passwords and no persistent sessions. Recovery is redeployment.
 | MongoDB primary failover | Brief errors | None: driver re-discovers topology and re-authenticates (tested). |
 | MongoDB total outage / restore | Logins fail with "unreachable" | Restore MongoDB per its own DR plan; the portal needs no action. Note: MongoDB users and roles are part of the `admin` database backup. |
 | Image registry unavailable | New pods cannot start | Mirror both images (by digest) to an internal registry; overlays reference digests. |
-| Git / Argo CD unavailable | No changes can be deployed | Running pods are unaffected; `oc apply -k deploy/overlays/<env>` from a local checkout as a break-glass path. |
+| Git / Argo CD unavailable | No changes can be deployed | Running pods are unaffected; `oc apply -k examples/openshift/mongo-portal/overlays/<env>` from a local checkout as a break-glass path. |
 | Audit trail | In-memory buffer lost on restart | Durable copy is the forwarded log stream (Splunk); size its retention to policy. |
 
 **Backups to keep:** this Git repository (manifests and configuration), the

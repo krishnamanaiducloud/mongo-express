@@ -1,0 +1,12 @@
+# mongo-express RBAC for dev. Replace the group names with this
+# environment's OpenShift groups (oc get groups). Format: base/rbac-policy.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo-express-rbac
+data:
+  policy.default: role:readonly
+  policy.csv: |
+    g, mongo-express-admins-dev, role:admin
+    g, mongo-express-editors-dev, role:editor
+    g, mongo-express-viewers-dev, role:readonly

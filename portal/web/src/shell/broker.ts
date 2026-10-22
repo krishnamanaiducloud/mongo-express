@@ -104,7 +104,7 @@ export async function authorizeOp(
     return { ok: false, error: { name: 'MongoshUnimplementedError', message: `${op} is not supported in the portal shell` } };
   }
   if (WRITE_OPS.has(op) && !canWrite) {
-    return { ok: false, error: { name: 'PortalPolicyError', message: `Your portal role is read-only; ${op} requires SRE access` } };
+    return { ok: false, error: { name: 'PortalPolicyError', message: `Your portal role is read-only; ${op} is not permitted` } };
   }
   let args: Record<string, unknown>;
   try {

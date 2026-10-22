@@ -1,5 +1,6 @@
 import 'dotenv/config.js';
 import fs from 'node:fs';
+import { openshiftConfigFromEnv } from './lib/openshift.js';
 
 function getBoolean(str, defaultValue = false) {
   return str ? str.toLowerCase() === 'true' : defaultValue;
@@ -75,8 +76,9 @@ export default {
       // tls: connect to the server using secure SSL
       tls: getBoolean(process.env.ME_CONFIG_MONGODB_TLS, mongo.tls),
 
-      // tlsAllowInvalidCertificates: validate mongod server certificate against CA
-      tlsAllowInvalidCertificates: getBoolean(process.env.ME_CONFIG_MONGODB_TLS_ALLOW_CERTS, true),
+      // tlsAllowInvalidCertificates: skip validating the mongod server certificate against
+      // the CA. Off by default: verification is only disabled when explicitly requested.
+      tlsAllowInvalidCertificates: getBoolean(process.env.ME_CONFIG_MONGODB_TLS_ALLOW_CERTS, false),
 
       // tlsCAFile: single PEM file on disk
       tlsCAFile: process.env.ME_CONFIG_MONGODB_TLS_CA_FILE,
@@ -144,6 +146,22 @@ export default {
   basicAuth: {
     username: getFileEnv(basicAuthUsername) || 'admin',
     password: getFileEnv(basicAuthPassword) || 'pass',
+  },
+
+  // Built-in OpenShift login (like Argo CD): ME_CONFIG_OPENSHIFT_OAUTH=auto offers it
+  // whenever the pod runs in OpenShift and the OAuth server is reachable; otherwise the
+  // local account (basic auth credentials, on the sign-in page) keeps working.
+  openshift: openshiftConfigFromEnv(),
+
+  // Argo CD-style RBAC (lib/rbac.js). The policy comes from ME_CONFIG_RBAC_POLICY and/or
+  // ME_CONFIG_RBAC_POLICY_DIR (policy.csv and policy.default, e.g. a mounted ConfigMap,
+  // re-read every 30s). OpenShift users get defaultRole unless the policy maps them; the
+  // local account gets localRole (role:admin keeps the upstream behaviour).
+  rbac: {
+    policy: process.env.ME_CONFIG_RBAC_POLICY || '',
+    policyDir: process.env.ME_CONFIG_RBAC_POLICY_DIR || '',
+    defaultRole: process.env.ME_CONFIG_RBAC_DEFAULT_ROLE ?? 'role:readonly',
+    localRole: process.env.ME_CONFIG_RBAC_LOCAL_ROLE ?? 'role:admin',
   },
 
   useOidcAuth: getBoolean(getFileEnv(oidcAuthEnabled)),

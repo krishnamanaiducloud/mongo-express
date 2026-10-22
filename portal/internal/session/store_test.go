@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/krishnamanaiducloud/mongo-express/portal/internal/identity"
 )
 
 type clock struct {
@@ -41,12 +43,12 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func TestCreateGetAndOwnerBinding(t *testing.T) {
 	st, _, closed := newTestStore(t, Options{IdleTimeout: time.Minute, AbsoluteTimeout: time.Hour, MaxPerUser: 3, MaxTotal: 10})
-	secret, err := st.Create(&Session{SSOUser: "alice"}, "")
+	secret, err := st.Create(&Session{Owner: "alice"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s, err := st.Get(secret, "alice")
-	if err != nil || s.SSOUser != "alice" || s.CSRFToken == "" || s.Handle == "" {
+	if err != nil || s.Owner != "alice" || s.CSRFToken == "" || s.Handle == "" {
 		t.Fatalf("get: %v %+v", err, s)
 	}
 	// Another SSO user presenting alice's cookie is rejected and the session destroyed.
@@ -61,7 +63,7 @@ func TestCreateGetAndOwnerBinding(t *testing.T) {
 
 func TestIdleAndAbsoluteExpiry(t *testing.T) {
 	st, c, _ := newTestStore(t, Options{IdleTimeout: 10 * time.Minute, AbsoluteTimeout: 30 * time.Minute})
-	secret, _ := st.Create(&Session{SSOUser: "a"}, "")
+	secret, _ := st.Create(&Session{Owner: "a"}, "")
 	c.add(9 * time.Minute)
 	if _, err := st.Get(secret, "a"); err != nil {
 		t.Fatalf("active session: %v", err)
@@ -75,7 +77,7 @@ func TestIdleAndAbsoluteExpiry(t *testing.T) {
 		t.Fatalf("idle expiry: %v", err)
 	}
 
-	secret, _ = st.Create(&Session{SSOUser: "a"}, "")
+	secret, _ = st.Create(&Session{Owner: "a"}, "")
 	for i := 0; i < 4; i++ {
 		c.add(8 * time.Minute)
 		_, err := st.Get(secret, "a")
@@ -90,8 +92,8 @@ func TestIdleAndAbsoluteExpiry(t *testing.T) {
 
 func TestRotationAndFixation(t *testing.T) {
 	st, _, _ := newTestStore(t, Options{IdleTimeout: time.Minute, AbsoluteTimeout: time.Hour})
-	old, _ := st.Create(&Session{SSOUser: "a"}, "")
-	fresh, _ := st.Create(&Session{SSOUser: "a"}, old)
+	old, _ := st.Create(&Session{Owner: "a"}, "")
+	fresh, _ := st.Create(&Session{Owner: "a"}, old)
 	if old == fresh {
 		t.Fatal("secret must rotate")
 	}
@@ -105,11 +107,11 @@ func TestRotationAndFixation(t *testing.T) {
 
 func TestLimits(t *testing.T) {
 	st, c, _ := newTestStore(t, Options{IdleTimeout: time.Hour, AbsoluteTimeout: time.Hour, MaxPerUser: 2, MaxTotal: 3})
-	s1, _ := st.Create(&Session{SSOUser: "a"}, "")
+	s1, _ := st.Create(&Session{Owner: "a"}, "")
 	c.add(time.Second)
-	s2, _ := st.Create(&Session{SSOUser: "a"}, "")
+	s2, _ := st.Create(&Session{Owner: "a"}, "")
 	c.add(time.Second)
-	s3, _ := st.Create(&Session{SSOUser: "a"}, "")
+	s3, _ := st.Create(&Session{Owner: "a"}, "")
 	if _, err := st.Get(s1, "a"); err == nil {
 		t.Fatal("oldest session should be evicted at per-user limit")
 	}
@@ -118,10 +120,10 @@ func TestLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.Create(&Session{SSOUser: "b"}, ""); err != nil {
+	if _, err := st.Create(&Session{Owner: "b"}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Create(&Session{SSOUser: "c"}, ""); !errors.Is(err, ErrCapacity) {
+	if _, err := st.Create(&Session{Owner: "c"}, ""); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("global cap: %v", err)
 	}
 }
@@ -135,7 +137,7 @@ func TestConcurrentUsersAreIsolated(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			user := string(rune('a' + i%26))
-			sec, err := st.Create(&Session{SSOUser: user, MongoUser: user}, "")
+			sec, err := st.Create(&Session{Owner: user, MongoUser: user}, "")
 			if err != nil {
 				errs <- err
 				return
@@ -165,7 +167,7 @@ func (f fakeCursor) Close(context.Context) error { f.closed.Add(1); return nil }
 
 func TestCursorRegistry(t *testing.T) {
 	st, _, _ := newTestStore(t, Options{IdleTimeout: time.Hour, AbsoluteTimeout: time.Hour})
-	sec, _ := st.Create(&Session{SSOUser: "a"}, "")
+	sec, _ := st.Create(&Session{Owner: "a"}, "")
 	s, _ := st.Get(sec, "a")
 	var closed atomic.Int32
 	c1, err := s.AddCursor(fakeCursor{&closed}, 2, time.Hour)
@@ -198,7 +200,7 @@ func TestCursorRegistry(t *testing.T) {
 
 func TestDeleteByHandleAndSweep(t *testing.T) {
 	st, c, closed := newTestStore(t, Options{IdleTimeout: time.Minute, AbsoluteTimeout: time.Hour})
-	sec, _ := st.Create(&Session{SSOUser: "a"}, "")
+	sec, _ := st.Create(&Session{Owner: "a"}, "")
 	s, _ := st.Get(sec, "a")
 	if st.DeleteByHandle("b", s.Handle, "x") {
 		t.Fatal("other user must not delete session by handle")
@@ -206,11 +208,27 @@ func TestDeleteByHandleAndSweep(t *testing.T) {
 	if !st.DeleteByHandle("a", s.Handle, "x") {
 		t.Fatal("delete by handle")
 	}
-	_, _ = st.Create(&Session{SSOUser: "a"}, "")
+	_, _ = st.Create(&Session{Owner: "a"}, "")
 	c.add(2 * time.Minute)
 	st.Sweep()
 	if st.Count() != 0 {
 		t.Fatal("sweep should remove idle sessions")
 	}
 	waitFor(t, func() bool { return closed.Load() == 2 })
+}
+
+func TestOwnerOf(t *testing.T) {
+	st := NewStore(Options{IdleTimeout: time.Hour, AbsoluteTimeout: time.Hour})
+	defer st.Close()
+	p := identity.MongoDBPrincipal("u", "admin")
+	secret, _ := st.Create(&Session{Owner: p.Key(), Principal: p}, "")
+	if owner, got := st.OwnerOf(secret); owner != p.Key() || got != p {
+		t.Fatalf("owner of: %q %v", owner, got)
+	}
+	if owner, got := st.OwnerOf("unknown"); owner != "" || got != nil {
+		t.Fatal("unknown secret")
+	}
+	if owner, _ := st.OwnerOf(""); owner != "" {
+		t.Fatal("empty secret")
+	}
 }

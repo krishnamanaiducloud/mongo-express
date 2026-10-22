@@ -2,82 +2,97 @@
 
 ```
 Browser ──HTTPS──▶ OpenShift Route (re-encrypt)
-                      │  TLS to service-CA certificate
+                      │  TLS to the service-CA certificate
                       ▼
-          ┌────────── Pod ─────────────────────────────────────┐
-          │ oauth-proxy :8443   ──HTTP 127.0.0.1──▶ portal :8080 │  UI + REST API
-          │  (OpenShift OAuth)                       portal :9090 │  /healthz /readyz /metrics
-          └───────────────────────────────────────────┬────────┘
-                                                      │ one MongoDB client per user session,
-                                                      │ authenticated with that user's credentials
-                                                      ▼  (TLS or plaintext, per profile)
-                                        Existing MongoDB replica set (unchanged)
+          ┌──────────── Pod ──────────────────────────────┐
+          │ portal :8443  UI + REST API + /oauth/* (HTTPS) │──▶ Kubernetes API (OAuth discovery, users/~)
+          │ portal :9090  /healthz /readyz /metrics       │──▶ OpenShift OAuth server (token exchange)
+          └───────────────────────┬───────────────────────┘     (both optional: passive when unreachable)
+                                  │ one MongoDB client per user session,
+                                  │ authenticated with that user's credentials
+                                  ▼  (TLS or plaintext, per profile)
+                    Existing MongoDB replica set (unchanged)
 ```
 
 ## Components
 
 | Component | Technology | Responsibility |
 | --- | --- | --- |
-| OAuth proxy sidecar | `openshift/oauth-proxy` | Corporate SSO through the cluster OAuth server; forwards user name and access token |
-| Portal backend | Go 1.26+, `mongo-driver/v2`, `net/http`, `slog`, Prometheus, OpenTelemetry | Identity verification, sessions, authorization, validated MongoDB operations, audit |
-| Web UI | React 19, TypeScript, Vite, PatternFly 6, TanStack Query | Explorer, document browser/editor, query console, shell, indexes, session/audit views |
+| Portal backend | Go 1.26+, `mongo-driver/v2`, `net/http`, `slog`, Prometheus, OpenTelemetry | Built-in OpenShift login, sessions, RBAC, validated MongoDB operations, profile health checks, audit |
+| Web UI | React 19, TypeScript, Vite, PatternFly 6, TanStack Query | Sign-in, explorer, document browser/editor, query console, mongosh shell, indexes, command palette, permissions, system status, session/audit views |
 | Images | Chainguard `static` (production), Wolfi rootfs (debug) | Same binary in both; debug adds troubleshooting tools and `mongosh` |
 
-The UI is compiled and embedded in the Go binary; the pod has no other
-runtime dependency (no Redis, no database of its own).
+The UI is compiled and embedded in the Go binary. The pod has no other runtime
+dependency: no OAuth proxy, no Redis, no database of its own.
 
-## Authentication: two independent stages
+## Optional integrations are passive
 
-**Stage A – SSO.** The OAuth proxy authenticates the browser against the
-OpenShift OAuth server. For every request it forwards `X-Forwarded-User` and
-`X-Forwarded-Access-Token`. The portal:
+| Integration | When it is unavailable |
+| --- | --- |
+| OpenShift login | Not offered; MongoDB-only login works ([oauth.md](oauth.md)) |
+| RBAC ConfigMap | Configuration policy and default role apply; invalid edits are rejected and the last good policy stays |
+| MongoDB deployment | Shown as offline/degraded on the login and status pages (unauthenticated `hello` health checks); logins report a clear error |
+| Tracing (OTLP) | Logged once; tracing stays off |
+| Session key Secret | Logged; a random per-pod key is used |
 
-1. accepts identity headers only from the trusted proxy address (loopback); the
-   API listener binds to `127.0.0.1`, so nothing else in the cluster can reach it;
-2. validates the access token against `GET /apis/user.openshift.io/v1/users/~`
-   and requires the returned user to equal the forwarded user (anti-spoofing);
-3. reads the configured OpenShift `Group` objects with its own ServiceAccount
-   (RBAC limited to `get` on exactly those group names) and maps membership to a
-   portal role: `sre` > `developer` > none. No role → HTTP 403, audit event.
+Readiness (`/readyz`) never depends on any of these.
 
-Results are cached briefly (tokens 1 min, groups 1 min, stale groups usable up
-to 5 min while the API is unreachable, then fail closed).
+## Authentication: two stages
 
-**Stage B – MongoDB.** The user picks an administrator-defined connection
+**Stage A: single sign-on (optional).** The built-in OpenShift login performs
+the OAuth authorization-code flow with PKCE, with the portal ServiceAccount as
+the OAuth client. It then reads the user's name and groups from
+`GET /apis/user.openshift.io/v1/users/~` with the user's own token. The result
+is kept in an AES-GCM encrypted, HttpOnly `__Host-` cookie and re-checked every
+5 minutes. A generic trusted proxy (`identity.header`) is also supported. See
+[oauth.md](oauth.md).
+
+Without SSO, the request is anonymous. That is not an error: the public
+endpoints (`/me`, `/status`, `/profiles`, `POST /session`) still work, so users
+can sign in with MongoDB credentials, unless `identity.requireSSO` is set.
+
+**Stage B: MongoDB.** The user picks an administrator-defined connection
 profile and enters MongoDB username, password and authentication database. The
 backend builds a client from the profile (hosts and TLS settings come only from
 configuration), authenticates with SCRAM-SHA-256/SCRAM-SHA-1, pings the server
 and confirms the principal with `connectionStatus`. Only then is a session
 created. The password is passed to the driver and kept only in process memory
 for re-authenticating new pool connections (for example after failover). It is
-never logged, persisted or returned.
+never logged, persisted or returned. Without SSO, the MongoDB user
+(`mongodb:<user>@<authSource>`) is the principal.
 
 ## Sessions
 
 * Server-side, in-memory, per pod. The browser holds a random 256-bit bearer
   token in a `__Host-` cookie (`HttpOnly`, `Secure`, `SameSite=Strict`).
-* Bound to the SSO user: presenting the cookie under another SSO identity
-  destroys the session.
+* Bound to its principal, qualified by source (an SSO user or a MongoDB-only
+  user). Presenting the cookie under another identity destroys the session, and
+  an SSO user's session is unusable without the SSO sign-in.
 * New identifier on every login (rotation, fixation protection), idle timeout
   (default 15 min), absolute timeout (default 8 h), per-user and global caps,
   explicit logout and termination of one's other sessions.
-* Expired/closed sessions disconnect their MongoDB client.
-* **Multi-replica strategy:** the Route uses cookie-based affinity. If a request
-  reaches a pod that does not own the session (pod restart, rescheduling,
-  affinity loss), the API returns `mongo_session_required` and the UI asks the
-  user to sign in to MongoDB again. Credentials are never shared between pods.
+* Expired or closed sessions disconnect their MongoDB client.
+* **Multi-replica strategy:** the Route uses cookie-based affinity. The OpenShift
+  sign-in and OAuth state cookies are sealed with the shared session key, so any
+  replica accepts them. MongoDB sessions are per pod: if a request reaches a pod
+  that does not own the session, the API returns `mongo_session_required` and
+  the UI asks for the MongoDB login again. Credentials are never shared between
+  pods.
 
 ## Authorization: two boundaries
 
-1. **Portal role** (from SSO groups), enforced server-side on every request:
-   developers are read-only regardless of their MongoDB privileges; write and
-   administrative endpoints return 403 `portal_role_forbidden` for them.
+1. **Portal RBAC** ([rbac.md](rbac.md)): an Argo CD-style policy (`p`/`g` lines)
+   maps OpenShift users and groups, or MongoDB-only users, to roles. Every
+   endpoint and shell operation checks the concrete database or namespace. That
+   includes collections reached through `$lookup`/`$unionWith` and the targets
+   of `$out`/`$merge`. Denials return 403 `portal_role_forbidden` and are audited.
 2. **MongoDB privileges** of the authenticated user: every operation runs as that
-   user, so MongoDB is the final authority. An SRE with a read-only MongoDB user
-   cannot write; MongoDB `Unauthorized` errors are returned as 403 and audited.
+   user, so MongoDB is the final authority. An admin-role user with a read-only
+   MongoDB user cannot write. MongoDB `Unauthorized` errors are returned as 403
+   and audited.
 
-`connectionStatus` privileges are used only to hide UI controls the user cannot
-use; they are never trusted for enforcement.
+The UI offers an action only when both allow it. It uses `connectionStatus`
+privileges and the RBAC decisions as hints; they never replace enforcement.
 
 ## Query safety
 
@@ -86,9 +101,9 @@ evaluation anywhere, including the mongosh-style shell, which is a fixed
 grammar parsed in the browser into API calls). The validator:
 
 * rejects `$where`, `$function`, `$accumulator` and JavaScript BSON values anywhere;
-* allows only an allowlist of aggregation stages; `$out`/`$merge` are refused for
-  developers and allowed for SREs only when `query.allowWriteStagesForSRE: true`,
-  and only as the final top-level stage;
+* allows only an allowlist of aggregation stages; `$out`/`$merge` are allowed only
+  when `query.allowWriteStages: true`, only as the final top-level stage, and only
+  for users whose RBAC role may write the target collection;
 * bounds nesting depth, element count, regex length, pipeline length;
 * enforces `limit`, `skip`, server-side `maxTimeMS` (via context deadlines /
   CSOT) and a response size cap;
@@ -125,11 +140,12 @@ portal page (strict CSP)                sandbox iframe (opaque origin)         d
 * mongosh calls the driver through `PortalServiceProvider`, which turns each
   call into a typed operation (`find`, `aggregate`, `getMore`, `insertOne`,
   `updateMany`, `runCommand`, …) sent over the MessagePort. The broker on the
-  portal page enforces an operation allowlist, blocks writes for read-only
+  portal page enforces an operation allowlist, fails writes early for read-only
   roles, asks for confirmation of bulk and destructive operations (typed
   confirmation for drops), and limits concurrency.
 * The server (`/api/v1/shell`) applies the same checks as the rest of the API:
-  portal role, JavaScript operators rejected anywhere, `$out`/`$merge` policy,
+  RBAC on each operation's namespace (`shell use`, plus e.g. `documents update
+  app/orders`; administrative commands need `shell admin`), JavaScript operators rejected anywhere, `$out`/`$merge` policy,
   `runCommand` allowlist (user/role management, `eval`, `mapReduce`, `shutdown`,
   replica-set changes and similar are always denied), server-checked
   `X-Confirm` for destructive operations, no writes to `local`, `config` or
@@ -159,9 +175,10 @@ does **not** encrypt portal→MongoDB traffic; only `tls.mode: enabled` does.
 
 ## Observability
 
-* JSON logs (stdout) with request id, route pattern, status, latency, trace id and
-  SSO user. Query contents, document contents, passwords and tokens are never logged.
-* Audit events (`"audit": true`) for logins, logouts, denials and every write.
+* JSON logs (stdout) with request id, route pattern, status, latency, trace id,
+  user and identity source. Query contents, document contents, passwords and tokens are never logged.
+* Audit events (`"audit": true`) for SSO and MongoDB logins, sign-outs, RBAC and
+  MongoDB denials and every write, with the user's roles and identity source.
 * Prometheus metrics on `:9090/metrics` (`mongo_portal_*`): HTTP requests/latency,
   auth attempts by stage/result, authorization denials by source/reason,
   active sessions, open MongoDB connections, MongoDB operation latency, build info.
@@ -174,8 +191,9 @@ does **not** encrypt portal→MongoDB traffic; only `tls.mode: enabled` does.
 portal/
   cmd/portal/            main, graceful shutdown, healthcheck subcommand
   internal/api/          HTTP server, middleware, handlers, openapi.yaml (embedded)
-  internal/identity/     OpenShift / header / dev identity resolvers
-  internal/mongoconn/    client options, TLS, error classification, privileges
+  internal/identity/     built-in OpenShift OAuth client, SSO cookie, header/dev sources
+  internal/rbac/         Argo CD-style policy engine and hot-reloading store
+  internal/mongoconn/    client options, TLS, error classification, privileges, profile health
   internal/query/        Extended JSON parsing and validation
   internal/session/      in-memory session store
   internal/ratelimit/    login throttling and lockout
@@ -185,9 +203,10 @@ portal/
   test/container/        image smoke tests
   scripts/               security scanning
   Dockerfile             production + debug targets
-deploy/
-  base/                  Deployment, Service, Route, SA, RBAC, NetworkPolicies, PDB, config
-  components/monitoring/ ServiceMonitor
-  overlays/{dev,test,prod}/
-  argocd/application.yaml
+examples/openshift/
+  mongo-portal/base/     Deployment, Service, Route, SA (OAuth client), RBAC policy, NetworkPolicies, PDB, config
+  mongo-portal/components/monitoring/  ServiceMonitor
+  mongo-portal/overlays/{dev,test,prod}/
+  cluster/               SCCs
+  argocd/                AppProjects and Applications
 ```

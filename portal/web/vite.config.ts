@@ -13,6 +13,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:8080',
+      '/oauth': 'http://127.0.0.1:8080',
     },
   },
   test: {

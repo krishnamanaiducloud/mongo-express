@@ -10,7 +10,7 @@ updates:
       update-types:
         - patch
         - minor
-# MongoDB portal (portal/, deploy/)
+# MongoDB portal (portal/, examples/openshift/)
 - package-ecosystem: gomod
   directory: '/portal'
   schedule:

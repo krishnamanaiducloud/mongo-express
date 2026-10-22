@@ -8,11 +8,13 @@ import type {
   DocumentsResponse,
   EJSONDocument,
   Me,
+  PermissionsInfo,
   Profile,
   QueryRequest,
   QueryResponse,
   SessionInfo,
   SessionSummary,
+  StatusInfo,
 } from './types';
 
 export const keys = {
@@ -28,6 +30,8 @@ export const keys = {
   indexes: (db: string, coll: string) => ['indexes', db, coll] as const,
   server: ['server'] as const,
   audit: (scope: string) => ['audit', scope] as const,
+  status: ['status'] as const,
+  permissions: ['permissions'] as const,
 };
 
 export function useMe() {
@@ -81,6 +85,8 @@ export function useLogin() {
       setCsrfToken(s.csrfToken);
       qc.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' && q.queryKey[0] !== 'profiles' });
       qc.setQueryData(keys.session, s);
+      // Without SSO the MongoDB user becomes the identity: refresh roles.
+      void qc.invalidateQueries({ queryKey: keys.me });
     },
   });
 }
@@ -255,6 +261,44 @@ export function useDropCollection(db: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.collections(db) });
       void qc.invalidateQueries({ queryKey: keys.databases });
+    },
+  });
+}
+
+export function useStatus(enabled = true) {
+  return useQuery({
+    queryKey: keys.status,
+    queryFn: () => api<StatusInfo>('/status'),
+    refetchInterval: 30_000,
+    enabled,
+  });
+}
+
+export interface AccessCheck {
+  resource: string;
+  action: string;
+  object: string;
+}
+
+export function usePermissions(check?: AccessCheck) {
+  return useQuery({
+    queryKey: [...keys.permissions, check ?? null],
+    queryFn: () => {
+      const q = check ? `?${new URLSearchParams({ resource: check.resource, action: check.action, object: check.object })}` : '';
+      return api<PermissionsInfo>(`/permissions${q}`);
+    },
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Ends the portal sign-in completely (MongoDB session and OpenShift sign-in). */
+export function useSignOut() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<{ signedOut: boolean; ssoLogoutURL: string }>('/auth/logout', { method: 'POST' }),
+    onSettled: () => {
+      qc.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' });
+      void qc.invalidateQueries({ queryKey: keys.me });
     },
   });
 }

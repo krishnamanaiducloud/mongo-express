@@ -1,5 +1,27 @@
 # Testing and validation report
 
+## Release 0.3.0: built-in OpenShift login, RBAC, passive integrations
+
+0.3.0 replaces the OAuth proxy sidecar with a built-in OpenShift login (Argo CD
+style), adds Argo CD-style RBAC and makes every optional integration passive.
+The mongo-express images (0.1.0) gain the same OpenShift login and RBAC.
+Results before publication (local images, linux/amd64):
+
+| Suite | Result |
+| --- | --- |
+| Go unit tests (`go test -race ./internal/...`), `go vet` | pass: rbac, identity (fake TLS OpenShift: discovery, PKCE, token exchange incl. Basic→body fallback, users/~, passive states, cookie revalidation/revocation/maxStale, forged cookies), api (MongoDB-only login, requireSSO, namespace RBAC, pipeline RBAC, shell RBAC, OAuth redirect flow: state, replay, denied, open redirect), config, session, query, audit |
+| Web (`tsc`, ESLint, Vitest 34 tests, build) | pass (one Vitest run timed out on the real-mongosh test under heavy host load; re-run passed) |
+| Container smoke (`test/container/smoke.sh`) | 74 / 74, incl. HTTPS listener with a verified certificate and anonymous `/me` returning sign-in options |
+| Browser e2e (`test/e2e`) | PASS, incl. MongoDB-only sign-in with RBAC on the MongoDB user, server-side refusal after UI confirmation, permissions page and access check, status page, command palette |
+| mongo-express mocha (177, 11 pending) and ESLint | pass, incl. RBAC policy, OpenShift client (fake cluster), sign-in/OAuth/RBAC routes |
+| mongo-express image tests (`scripts/test-images.sh`) | 40 / 40, incl. passive OpenShift login outside OpenShift and RBAC on the local account, for both images |
+| Manifests (kustomize + kubeconform, OpenShift 4.18 schemas) | all overlays valid; no StatefulSet/PVC/Secret, no fixed UID, no cluster RBAC from app overlays, no OAuth proxy |
+| Scans | mongo-express minimal: Trivy no findings; debug: 8 × UNKNOWN GO-2026-5932 (documented exception); hadolint clean |
+
+Not covered: a real OpenShift OAuth server end to end. The flow is exercised
+against faithful fakes of the discovery, token and `users/~` endpoints; verify
+on a cluster as described in [deployment.md](deployment.md#7-verify).
+
 ## Release 0.2.0 — in-browser mongosh shell
 
 0.2.0 replaces the 0.1.0 mongosh-style command grammar with the real mongosh
@@ -119,7 +141,7 @@ jq) present and executable.
 | govulncheck v1.9.0 (Go 1.27.3) | reachable Go vulnerabilities | **0 affecting**; 1 module-level advisory not reachable (below) |
 | gosec | Go SAST | 0 issues (5 reviewed: 2 bounded int conversions, 2 cookie `Secure` from validated config, 1 local health URL — annotated with justification) |
 | npm audit | runtime and all deps | **0 vulnerabilities** |
-| gitleaks | working tree (portal/, deploy/) | **no leaks** |
+| gitleaks | working tree (portal/, examples/openshift/) | **no leaks** |
 | hadolint | Dockerfile | clean (justified inline ignores: root in build-only stage, rolling Wolfi pins via base digest, pipefail via SHELL) |
 | Trivy image | production | **0 Critical / 0 High / 0 Medium / 0 Low**, 1 Unknown |
 | Trivy image | debug | **0 Critical / 0 High / 0 Medium / 0 Low**, 1 Unknown |

@@ -7,24 +7,28 @@
 | MongoDB user passwords | Browser form → portal process memory (driver credential) only |
 | Data in MongoDB | MongoDB; transiently in portal responses |
 | Portal session bearer token | `__Host-` HttpOnly cookie; SHA-256 hash in pod memory |
-| SSO access token | OAuth proxy cookie; forwarded per request; SHA-256 hash cached 1 min |
-| Portal ServiceAccount token | Pod (projected); can only `get` the configured Group objects |
-| Session/proxy keys | Kubernetes Secrets |
+| OpenShift access token (scope `user:info`) | AES-256-GCM sealed `__Host-` cookie (HttpOnly, Secure, SameSite=Strict); used only to re-check identity and groups (`users/~`) |
+| Portal ServiceAccount token | Pod (projected); OAuth client secret only; no RBAC permissions |
+| Session key (CSRF HMAC, SSO and OAuth-state cookie encryption) | Kubernetes Secret |
+| RBAC policy | ConfigMap (`mongo-portal-rbac`), managed in Git/Argo CD |
 
 ## Trust boundaries
 
-Browser ↔ Route (TLS) ↔ OAuth proxy (TLS, service CA) ↔ portal (loopback) ↔
-MongoDB (TLS or plaintext per profile) and portal ↔ Kubernetes API (TLS).
+Browser ↔ Route (TLS) ↔ portal (TLS, service CA) ↔ MongoDB (TLS or plaintext
+per profile); portal ↔ Kubernetes API and OpenShift OAuth server (TLS, verified).
+Browser ↔ OpenShift OAuth server (user sign-in at the IdP).
 
 ## Threats and mitigations (STRIDE)
 
 | Threat | Mitigation | Verified by |
 | --- | --- | --- |
-| **Spoofing** identity headers | Loopback listener; trusted-proxy CIDR check; token validated against `users/~` and must match the header | `identity_test` (spoof, untrusted peer), `api_test TestSSOStage` |
-| Unauthorized SSO user | Group membership checked server-side every request; fail closed when API unavailable beyond max staleness | `TestOpenShiftResolver`, `TestOpenShiftFailsClosed…` |
-| Session hijack / fixation | 256-bit random token, HttpOnly/Secure/SameSite=Strict `__Host-` cookie, rotation on login, SSO-identity binding destroys cross-user use, idle/absolute expiry | `TestSessionRotationOnLogin`, `TestCrossUserCookieRejected`, `TestSessionExpiry` |
-| CSRF (incl. login CSRF) | Per-session token / HMAC pre-login token bound to SSO user; Origin and Sec-Fetch-Site checks; JSON-only bodies | `TestLoginCSRFAndOrigin`, `TestSREWriteNeedsCSRF…` |
-| **Tampering**: developer writes | Portal-role gate on all write routes, independent of UI; `$out`/`$merge` blocked | `TestDeveloperCannotWriteViaDirectAPI`, integration `TestDeveloperReadOnlyEndToEnd` |
+| **Spoofing** identity | Built-in OAuth code flow with state + PKCE (S256); identity read with the user's token from `users/~`; sealed SSO cookie (forgery or another key is rejected); identity headers only with `identity.header` and only from trusted CIDRs (others ignored) | `identity_test` (flow, tampered cookie, untrusted peer), `oauth_test TestOpenShiftOAuthFlow` (state mismatch, replay, denied, bad code) |
+| Unauthorized user | RBAC on every request and shell operation against the concrete namespace; groups re-validated every 5 min; revoked tokens sign the user out; after `maxStale` without the API the sign-in ends | `rbac_test`, `TestNamespaceScopedRBAC`, `TestResolverRevokedToken`, `TestResolverSSOCookieLifecycle` |
+| OAuth code interception / open redirect | Redirect URI restricted by the ServiceAccount redirect reference; PKCE; return paths must be local (`//host`, `/\host` rejected) | `TestOpenShiftOAuthFlow` |
+| RBAC bypass through aggregation | `$lookup`/`$graphLookup`/`$unionWith` sources and `$out`/`$merge` targets authorized; undeterminable references refused | `TestNamespaceScopedRBAC`, `namespaces_test` |
+| Session hijack / fixation | 256-bit random token, HttpOnly/Secure/SameSite=Strict `__Host-` cookie, rotation on login, owner binding qualified by identity source (SSO vs MongoDB-only) destroys cross-identity use, idle/absolute expiry | `TestSessionRotationOnLogin`, `TestCrossUserCookieRejected`, `TestSSOSessionNeedsSSO`, `TestMongoDBOnlyLogin`, `TestSessionExpiry` |
+| CSRF (incl. login CSRF) | Per-session token / HMAC pre-login token bound to the principal, or for anonymous browsers to a random HttpOnly cookie; Origin and Sec-Fetch-Site checks; JSON-only bodies | `TestLoginCSRFAndOrigin`, `TestMongoDBOnlyLogin`, `TestSREWriteNeedsCSRF…` |
+| **Tampering**: read-only users write | RBAC on all write routes and shell operations, independent of the UI; `$out`/`$merge` need write permission on the target | `TestDeveloperCannotWriteViaDirectAPI`, integration `TestDeveloperReadOnlyEndToEnd`, e2e |
 | Privilege beyond MongoDB grants | Every operation runs as the user; MongoDB enforces | integration `TestSRERespectsMongoDBRoles` |
 | NoSQL injection | Extended JSON parsed by the driver (no string concatenation); operator-free `_id` tokens; JS operators rejected; strict JSON decoding | `validate_test`, `TestDecodeIDRejectsOperators` |
 | Server-side JavaScript | `$where`, `$function`, `$accumulator`, Code values rejected at any depth; no `runCommand`/`eval` API; shell grammar never evaluates JS | `TestFilterRejectsDangerousInput`, `shell.test.ts` |
@@ -40,10 +44,10 @@ MongoDB (TLS or plaintext per profile) and portal ↔ Kubernetes API (TLS).
 | Error leakage | Classified, generic error messages; no stack traces to clients | `mongoconn` classification tests |
 | XSS | React escaping, no `dangerouslySetInnerHTML` (lint rule), strict CSP (`script-src 'self'`, no inline), `nosniff` | `components.test.tsx`, header tests |
 | Clickjacking | `frame-ancestors 'none'`, `X-Frame-Options: DENY` | header tests |
-| **DoS**: brute force | Per-SSO-user rate limit, per-account lockout with backoff (only on server-confirmed failures), concurrent login cap | `TestLoginFailureAndLockout`, `limiter_test` |
+| **DoS**: brute force | Per-SSO-user (or per-client-address) rate limit, per-account lockout with backoff (only on server-confirmed failures), concurrent login cap | `TestLoginFailureAndLockout`, `limiter_test` |
 | Resource exhaustion | Body limits, query limits/skip cap, server-side `maxTimeMS`, response byte cap, session caps, pool size per session, container limits | `TestQueryLimitsAndTimeouts`, `TestSecurityHeadersAndBodyLimit` |
 | **Elevation**: container escape | Non-root arbitrary UID, read-only rootfs, all capabilities dropped, no privilege escalation, RuntimeDefault seccomp, restricted-v2 SCC, no shell/package manager in production image | smoke test, manifest checks |
-| Lateral movement | NetworkPolicies: ingress only router + monitoring; egress DNS, MongoDB pods, API | manifest review (cluster test pending) |
+| Lateral movement | NetworkPolicies: ingress only router + monitoring; egress DNS, MongoDB pods, API/OAuth (443/6443); ServiceAccount without permissions | manifest review (cluster test pending) |
 | Supply chain | Base images pinned by digest (Chainguard), lockfiles, `go mod verify`, `npm ci --ignore-scripts`, mongosh checksum-pinned, SBOMs, vulnerability scans, Dependabot | security scan reports |
 
 ## Residual risks
@@ -61,7 +65,10 @@ MongoDB (TLS or plaintext per profile) and portal ↔ Kubernetes API (TLS).
    endpoint IPs per cluster.
 6. The debug image contains a shell and network tools; restrict its use to
    troubleshooting windows.
-7. Base `origin-oauth-proxy` is a community image; use the Red Hat build in production.
+7. Without SSO (or with `defaultRole` set), anyone who reaches the Route and holds valid
+   MongoDB credentials gets the default role. MongoDB authentication remains
+   required; set `identity.requireSSO: true` and/or `rbac.defaultRole: ""` for a
+   deny-by-default posture.
 8. The shell sandbox page needs `'unsafe-eval'` to evaluate JavaScript. It is
    confined to an opaque origin with no network access; a sandbox escape would
    require a browser vulnerability. A user can still do, through the shell,
@@ -69,3 +76,6 @@ MongoDB (TLS or plaintext per profile) and portal ↔ Kubernetes API (TLS).
 9. The sandbox could navigate itself to another same-origin URL (the portal
    page's `frame-src 'self'` prevents other origins); query strings are not
    logged by the portal.
+10. The OpenShift access token is kept (encrypted) in a browser cookie for
+    revalidation. It has scope `user:info` only. Signing out removes the cookie
+    but does not revoke the token at the OAuth server; it expires with its lifetime.

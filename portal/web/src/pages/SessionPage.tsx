@@ -21,7 +21,8 @@ import { LockIcon, UnlockIcon } from '@patternfly/react-icons';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { useLogout, useSession, useSessions, useTerminateSession } from '../api/hooks';
 import type { Me } from '../api/types';
-import { RoleLabel } from '../components/Permission';
+import { IdentityLabel, sourceDescription } from '../components/Indicators';
+import { RolesLabel } from '../components/Permission';
 import { InlineError } from './StatusPages';
 
 function useNow(intervalMs: number) {
@@ -48,6 +49,7 @@ export function SessionPage({ me }: { me: Me }) {
   const navigate = useNavigate();
   const now = useNow(1000);
   const s = session.data;
+  const id = s?.identity ?? { user: me.user, source: me.source, groups: me.groups };
 
   const doLogout = async () => {
     try {
@@ -65,25 +67,30 @@ export function SessionPage({ me }: { me: Me }) {
       <Grid hasGutter>
         <GridItem lg={6}>
           <Card isFullHeight>
-            <CardTitle>Corporate SSO identity</CardTitle>
+            <CardTitle>Identity &amp; portal access</CardTitle>
             <CardBody>
               <DescriptionList isHorizontal>
                 <DescriptionListGroup>
                   <DescriptionListTerm>User</DescriptionListTerm>
-                  <DescriptionListDescription>{me.user}</DescriptionListDescription>
-                </DescriptionListGroup>
-                <DescriptionListGroup>
-                  <DescriptionListTerm>Portal role</DescriptionListTerm>
                   <DescriptionListDescription>
-                    <RoleLabel role={me.role} />
+                    <IdentityLabel user={id.user} source={id.source} />
+                    <div className="pf-v6-u-font-size-sm">{sourceDescription(id.source)}</div>
                   </DescriptionListDescription>
                 </DescriptionListGroup>
                 <DescriptionListGroup>
-                  <DescriptionListTerm>Authorized groups</DescriptionListTerm>
+                  <DescriptionListTerm>Portal roles</DescriptionListTerm>
                   <DescriptionListDescription>
-                    <LabelGroup>{me.groups.map((g) => <Label key={g} isCompact>{g}</Label>)}</LabelGroup>
+                    <RolesLabel roles={s?.portalRoles ?? me.roles} />
                   </DescriptionListDescription>
                 </DescriptionListGroup>
+                {(id.groups ?? []).length > 0 && (
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>Groups used by RBAC</DescriptionListTerm>
+                    <DescriptionListDescription>
+                      <LabelGroup>{(id.groups ?? []).map((g) => <Label key={g} isCompact>{g}</Label>)}</LabelGroup>
+                    </DescriptionListDescription>
+                  </DescriptionListGroup>
+                )}
                 <DescriptionListGroup>
                   <DescriptionListTerm>Portal version</DescriptionListTerm>
                   <DescriptionListDescription>
@@ -149,9 +156,9 @@ export function SessionPage({ me }: { me: Me }) {
               <Button variant="secondary" className="pf-v6-u-mt-md" onClick={() => void doLogout()} isLoading={logout.isPending}>
                 Disconnect from MongoDB
               </Button>
-              {me.ssoLogoutURL && (
+              {me.ssoLogoutURL && id.source === 'openshift' && (
                 <Button variant="link" component="a" href={me.ssoLogoutURL} className="pf-v6-u-mt-md">
-                  Sign out of corporate SSO
+                  Sign out at the identity provider
                 </Button>
               )}
             </CardBody>

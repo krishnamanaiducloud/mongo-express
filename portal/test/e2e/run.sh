@@ -4,7 +4,8 @@
 # Starts MongoDB and the portal image on a private network, then runs
 # Playwright/Chromium inside the portal container's network namespace so the
 # portal is reached as http://localhost (a secure context, so Secure
-# __Host- cookies work). Identity is injected as trusted proxy headers.
+# __Host- cookies work). SSO identity is injected as trusted proxy headers;
+# one scenario uses no SSO at all (MongoDB-only sign-in).
 #
 # Usage: run.sh <portal-image>
 set -euo pipefail
@@ -27,6 +28,8 @@ trap cleanup EXIT
 docker network create "$NET" >/dev/null
 docker run -d --name "e2e-mongo-$$" --network "$NET" --network-alias mongo \
   -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$ROOT_PW" "$MONGO_IMAGE" --wiredTigerCacheSizeGB 0.25 >/dev/null
+# The mongo image restarts mongod after creating the root user: wait for that.
+for _ in $(seq 1 120); do docker logs "e2e-mongo-$$" 2>&1 | grep -q 'MongoDB init process complete' && break; sleep 1; done
 for _ in $(seq 1 60); do docker exec "e2e-mongo-$$" mongosh --quiet -u root -p "$ROOT_PW" --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1 && break; sleep 1; done
 docker exec -e READER_PW="$READER_PW" -e WRITER_PW="$WRITER_PW" "e2e-mongo-$$" mongosh --quiet -u root -p "$ROOT_PW" --eval '
   const a = db.getSiblingDB("admin");
@@ -42,9 +45,15 @@ server:
   listenAddress: 127.0.0.1:8080
   opsListenAddress: 127.0.0.1:9090
 identity:
-  mode: header
-  developerGroups: [devs]
-  sreGroups: [sres]
+  header:
+    enabled: true
+  openshift:
+    enabled: "false"
+rbac:
+  policy: |
+    g, sres, role:admin
+    g, devs, role:readonly
+    g, mongodb:writer@admin, role:editor
 profiles:
   - name: local
     displayName: E2E MongoDB

@@ -2,13 +2,14 @@
 
 ## Resources
 
-`deploy/argocd/application.yaml` contains:
+`examples/openshift/argocd/application.yaml` contains:
 
 * **AppProject `mongo-portal`** – source repo restricted to this repository,
   destinations restricted to the three portal namespaces, and a resource
-  *allowlist*: ServiceAccount, ConfigMap, Service, Deployment, Route,
-  NetworkPolicy, PodDisruptionBudget, ServiceMonitor, plus ClusterRole and
-  ClusterRoleBinding. StatefulSets, PVCs and Secrets are explicitly blacklisted,
+  *allowlist*: ServiceAccount, ConfigMap (configuration and the RBAC policy),
+  Service, Deployment, Route, NetworkPolicy, PodDisruptionBudget, ServiceMonitor
+  and RoleBinding. No cluster-scoped kinds are allowed (the SCCs live in the
+  separate `mongo-cluster` project). StatefulSets, PVCs and Secrets are explicitly blacklisted,
   so Argo CD cannot create, adopt, modify or prune MongoDB workloads even if a
   manifest were added by mistake.
 * **Applications** `mongo-portal-dev`, `mongo-portal-test` (automated sync with
@@ -22,15 +23,18 @@ namespace are never adopted unless they are rendered from the overlay.
 ```bash
 ARGO_NS=openshift-gitops       # or your Argo CD namespace
 # Adjust destination namespaces / repoURL / targetRevision first.
-oc apply -n "$ARGO_NS" -f deploy/argocd/application.yaml
+oc apply -n "$ARGO_NS" -f examples/openshift/argocd/application.yaml
 # The Argo CD application controller needs rights in the portal namespaces:
 oc label namespace mongo-portal-prod argocd.argoproj.io/managed-by="$ARGO_NS"
 ```
 
-ClusterRole/ClusterRoleBinding management requires the Argo CD instance to
-have cluster-scoped permission for those two kinds. If your Argo CD is
-namespace-scoped, apply `rbac.yaml` (rendered) once by a cluster admin and
-remove it from the overlay.
+The portal needs no cluster-scoped objects of its own, so a namespace-scoped
+Argo CD instance can manage it. Only the SCC prerequisites
+(`examples/openshift/argocd/cluster.yaml`, manual sync) need a cluster-scoped
+instance or a one-time `oc apply -k examples/openshift/cluster` by a cluster admin.
+
+RBAC changes (`patch-rbac.yaml`) are ordinary ConfigMap updates. The pods pick
+them up within 30 seconds without a rollout, so a sync does not interrupt users.
 
 ## Release flow
 
@@ -39,7 +43,7 @@ remove it from the overlay.
 2. A maintainer pushes a tag `portal-vX.Y.Z`. The `release` job (protected
    GitHub environment, manual approval) builds multi-arch images, scans them,
    pushes `X.Y.Z` and `X.Y.Z-debug`, generates SBOM + provenance, and opens a PR
-   that pins `deploy/overlays/prod` to the new digest.
+   that pins `examples/openshift/mongo-portal/overlays/prod` to the new digest.
 3. Dev/test sync automatically from `master`; production is synced manually in
    Argo CD after the digest PR is reviewed and merged.
 

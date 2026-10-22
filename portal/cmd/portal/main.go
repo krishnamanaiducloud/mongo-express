@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,7 +14,9 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -24,6 +28,8 @@ import (
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/config"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/identity"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/metrics"
+	"github.com/krishnamanaiducloud/mongo-express/portal/internal/mongoconn"
+	"github.com/krishnamanaiducloud/mongo-express/portal/internal/rbac"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/session"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/telemetry"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/webui"
@@ -71,9 +77,15 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Optional integrations never stop the portal: an unusable tracing
+	// endpoint is reported and tracing stays off.
+	tracing := true
 	shutdownTracing, err := telemetry.Setup(ctx, version)
 	if err != nil {
-		return fmt.Errorf("tracing: %w", err)
+		logger.Warn("tracing disabled: the OTLP exporter could not be configured", "error", err.Error())
+		shutdownTracing, tracing = func(context.Context) error { return nil }, false
+	} else if !telemetry.Enabled() {
+		tracing = false
 	}
 	defer func() {
 		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -87,21 +99,58 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 				"profile", p.Name, "plaintext_approved", p.PlaintextApproved, "security_exception", p.SecurityExceptionRef)
 		}
 	}
-	if cfg.Identity.Mode == config.IdentityDev {
-		logger.Warn("INSECURE development identity mode is enabled; never use this in a cluster", "user", cfg.Identity.Dev.User)
+	if cfg.Identity.Dev.Enabled {
+		logger.Warn("INSECURE development identity is enabled; never use this in a cluster", "user", cfg.Identity.Dev.User)
+	}
+	if cfg.Identity.Mode != "" {
+		logger.Warn("identity.mode is deprecated; use identity.openshift.enabled, identity.header.enabled or identity.dev.enabled", "mode", cfg.Identity.Mode)
+	}
+	if len(cfg.Identity.DeveloperGroups)+len(cfg.Identity.SREGroups) > 0 {
+		logger.Warn("identity.developerGroups and identity.sreGroups are deprecated; use rbac.policy (g, <group>, role:readonly|role:admin)")
 	}
 
-	resolver, err := identity.New(cfg.Identity)
+	key, err := loadKey(cfg.Session.KeyFile)
+	if err != nil {
+		logger.Warn("session key unusable; using a random per-process key (sign-ins do not survive restarts or move between replicas)", "error", err.Error())
+		key = nil
+	}
+	if key == nil {
+		if cfg.Session.KeyFile == "" {
+			logger.Warn("session.keyFile not set; using a random per-process key (single replica only)")
+		}
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return err
+		}
+	}
+
+	rbacStore, err := rbac.NewStore(rbac.Source{
+		Inline: cfg.RBAC.Policy, Extra: cfg.LegacyRBACPolicy(), DefaultRole: *cfg.RBAC.DefaultRole, Dir: cfg.RBAC.PolicyDir,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("rbac: %w", err)
+	}
+	go rbacStore.Watch(ctx, cfg.RBAC.ReloadInterval)
+
+	resolver, err := identity.NewResolver(identity.Options{
+		Config: cfg.Identity, Key: key, SecureCookie: *cfg.Session.SecureCookie, MaxAge: cfg.Session.AbsoluteTimeout,
+		KeepGroup: func(g string) bool {
+			subjects := rbacStore.Policy().Subjects()
+			return slices.Contains(subjects, g) || slices.Contains(subjects, "group:"+g)
+		},
+		Logger: logger,
+	})
 	if err != nil {
 		return fmt.Errorf("identity: %w", err)
 	}
-	key, err := loadKey(cfg.Session.KeyFile)
-	if err != nil {
-		return err
-	}
-	if key == nil {
-		logger.Warn("session.keyFile not set; using a random per-process CSRF key (single replica only)")
-	}
+	go resolver.OpenShift.Run(ctx)
+
+	monitor := mongoconn.NewMonitor(cfg.Profiles, cfg.Monitoring.ProfileHealthInterval, logger)
+	monitorDone := make(chan struct{})
+	go func() {
+		defer close(monitorDone)
+		monitor.Run(ctx)
+	}()
 
 	m := metrics.New()
 	m.BuildInfo.WithLabelValues(version, commit, runtime.Version()).Set(1)
@@ -118,8 +167,8 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 		},
 	})
 	srv = api.New(api.Deps{
-		Config: cfg, Identity: resolver, Store: store, Audit: auditLog, Metrics: m, Logger: logger,
-		CSRFKey: key, UI: webui.Handler(), Build: api.BuildInfo{Version: version, Commit: commit},
+		Config: cfg, Identity: resolver, RBAC: rbacStore, Monitor: monitor, Store: store, Audit: auditLog, Metrics: m, Logger: logger,
+		CSRFKey: key, UI: webui.Handler(), Build: api.BuildInfo{Version: version, Commit: commit}, TracingEnabled: tracing,
 	})
 
 	var ready atomic.Bool
@@ -139,6 +188,18 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	scheme := "http"
+	if cfg.Server.TLS.CertFile != "" {
+		cr := &certReloader{certFile: cfg.Server.TLS.CertFile, keyFile: cfg.Server.TLS.KeyFile}
+		if _, err := cr.get(); err != nil {
+			return fmt.Errorf("server tls: %w", err)
+		}
+		mainLn = tls.NewListener(mainLn, &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cr.get() },
+		})
+		scheme = "https"
+	}
 	opsLn, err := net.Listen("tcp", cfg.Server.OpsListenAddress)
 	if err != nil {
 		return err
@@ -147,9 +208,9 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 	go func() { errc <- serve(mainSrv, mainLn) }()
 	go func() { errc <- serve(opsSrv, opsLn) }()
 	ready.Store(true)
-	logger.Info("mongo portal started", "version", version, "commit", commit, "listen", cfg.Server.ListenAddress,
-		"ops_listen", cfg.Server.OpsListenAddress, "identity_mode", cfg.Identity.Mode, "profiles", len(cfg.Profiles),
-		"environment", cfg.Environment)
+	logger.Info("mongo portal started", "version", version, "commit", commit, "listen", cfg.Server.ListenAddress, "scheme", scheme,
+		"ops_listen", cfg.Server.OpsListenAddress, "openshift_login", cfg.Identity.OpenShift.Enabled, "header_identity", cfg.Identity.Header.Enabled,
+		"require_sso", cfg.Identity.RequireSSO, "rbac", rbacStore.Status().Source, "profiles", len(cfg.Profiles), "environment", cfg.Environment)
 
 	select {
 	case <-ctx.Done():
@@ -166,9 +227,50 @@ func run(cfg *config.Config, logger *slog.Logger) error {
 	defer cancel()
 	_ = mainSrv.Shutdown(sctx)
 	store.Close()
+	stop() // ends the background probes and closes the monitor clients
+	<-monitorDone
 	_ = opsSrv.Shutdown(sctx)
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// certReloader serves the current certificate and reloads it when the files
+// change (the OpenShift service CA rotates serving certificates).
+type certReloader struct {
+	certFile, keyFile string
+	mu                sync.Mutex
+	cert              *tls.Certificate
+	certMod, keyMod   time.Time
+	checked           time.Time
+}
+
+func (c *certReloader) get() (*tls.Certificate, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cert != nil && time.Since(c.checked) < 10*time.Second {
+		return c.cert, nil
+	}
+	c.checked = time.Now()
+	cs, err1 := os.Stat(c.certFile)
+	ks, err2 := os.Stat(c.keyFile)
+	if err := errors.Join(err1, err2); err != nil {
+		if c.cert != nil {
+			return c.cert, nil
+		}
+		return nil, err
+	}
+	if c.cert != nil && cs.ModTime().Equal(c.certMod) && ks.ModTime().Equal(c.keyMod) {
+		return c.cert, nil
+	}
+	pair, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
+	if err != nil {
+		if c.cert != nil {
+			return c.cert, nil // mid-rotation: keep serving the previous pair
+		}
+		return nil, err
+	}
+	c.cert, c.certMod, c.keyMod = &pair, cs.ModTime(), ks.ModTime()
+	return c.cert, nil
 }
 
 func serve(s *http.Server, ln net.Listener) error {

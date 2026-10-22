@@ -34,6 +34,7 @@ import (
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/identity"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/metrics"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/mongoconn"
+	"github.com/krishnamanaiducloud/mongo-express/portal/internal/rbac"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/session"
 )
 
@@ -240,11 +241,19 @@ func newPortal(t *testing.T, profiles ...config.Profile) *portal {
 		t.Fatal(err)
 	}
 	cfg.Profiles = profiles
-	res, _ := identity.New(cfg.Identity)
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	key := []byte("integration-test-session-key-0123456789")
+	res, err := identity.NewResolver(identity.Options{Config: cfg.Identity, Key: key, SecureCookie: true, MaxAge: time.Hour, Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, err := rbac.NewStore(rbac.Source{Extra: cfg.LegacyRBACPolicy(), DefaultRole: *cfg.RBAC.DefaultRole}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := session.NewStore(session.Options{IdleTimeout: time.Hour, AbsoluteTimeout: time.Hour, MaxPerUser: 5, MaxTotal: 100})
 	t.Cleanup(store.Close)
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	srv := api.New(api.Deps{Config: cfg, Identity: res, Store: store, Audit: audit.New(logger, 100), Metrics: metrics.New(), Logger: logger})
+	srv := api.New(api.Deps{Config: cfg, Identity: res, RBAC: rb, CSRFKey: key, Store: store, Audit: audit.New(logger, 100), Metrics: metrics.New(), Logger: logger})
 	return &portal{t: t, h: srv.Handler(), store: store}
 }
 
@@ -354,7 +363,7 @@ func TestDeveloperReadOnlyEndToEnd(t *testing.T) {
 		}
 	}
 	code, m := dev.do("POST", base("app", "orders")+"/query", map[string]any{"operation": "aggregate", "pipeline": `[{"$out":"stolen"}]`})
-	if code != 400 {
+	if code != 403 {
 		t.Fatalf("$out for developer: %d %v", code, m)
 	}
 	admin := adminClient(t)

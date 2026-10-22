@@ -94,8 +94,42 @@ functional() { # label image
   [ -n "$up" ] && ok "HTTPS mode serves /status" || { bad "HTTPS mode"; docker logs "$c-tls" 2>&1 | tail -5; }
 }
 
+# OpenShift login enabled outside OpenShift: passive (no button, no error), the
+# local account signs in on the sign-in page, and RBAC applies to it.
+passive_sso() { # label image
+  local label="$1" img="$2" c="me-sso-$1-$$"
+  echo "== OpenShift login (passive) + RBAC: $label"
+  start "$c" "$img" -e ME_CONFIG_OPENSHIFT_OAUTH=auto -e ME_CONFIG_RBAC_LOCAL_ROLE=role:readonly
+  local up=""
+  for _ in $(seq 1 40); do [ "$(curl_in "$c" -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/status 2>/dev/null)" = 200 ] && up=1 && break; sleep 1; done
+  [ -n "$up" ] || { bad "app not healthy with ME_CONFIG_OPENSHIFT_OAUTH=auto"; docker logs "$c" 2>&1 | tail -20; return; }
+  local jar="/w/jar-sso-$label" C=(docker run --rm --label "me-test=$$" --network "container:$c" -u 0 -v "$WORK:/w" "$CURL_IMAGE" -sS)
+  local loc page csrf code
+  loc="$(curl_in "$c" -o /dev/null -w '%{redirect_url}' http://127.0.0.1:8081/)"
+  [[ "$loc" == */login ]] && ok "anonymous visitor sent to the sign-in page (no basic-auth prompt)" || bad "anonymous redirect: $loc"
+  page="$("${C[@]}" -c "$jar" http://127.0.0.1:8081/login)"
+  if grep -q 'name="password"' <<<"$page" && ! grep -q 'Log in with OpenShift' <<<"$page"; then
+    ok "sign-in page offers the local account and no OpenShift button outside OpenShift"
+  else
+    bad "sign-in page content"
+  fi
+  csrf="$(grep -oE 'name="_csrf" value="[^"]+"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]+)"/\1/')"
+  code="$("${C[@]}" -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" --data-urlencode "_csrf=$csrf" \
+    --data-urlencode username=admin --data-urlencode "password=$UI_PW" http://127.0.0.1:8081/login)"
+  page="$("${C[@]}" -b "$jar" -c "$jar" http://127.0.0.1:8081/)"
+  grep -q 'Local account' <<<"$page" && grep -q 'role:readonly' <<<"$page" \
+    && ok "local account signed in (HTTP $code) with its RBAC role" || bad "local sign-in (HTTP $code)"
+  grep -q 'Create database' <<<"$page" && bad "read-only role sees 'Create database'" || ok "read-only role: write controls hidden"
+  csrf="$(grep -oE 'name="_csrf" value="[^"]+"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]+)"/\1/')"
+  code="$("${C[@]}" -o /dev/null -w '%{http_code}' -b "$jar" --data-urlencode "_csrf=$csrf" --data-urlencode database=rbac_denied http://127.0.0.1:8081/)"
+  [ "$code" = 403 ] && ok "read-only role cannot create a database (403)" || bad "create database as read-only: HTTP $code"
+  docker rm -f "$c" >/dev/null
+}
+
 functional minimal "$MIN"
 functional debug "$DBG"
+passive_sso minimal "$MIN"
+passive_sso debug "$DBG"
 
 echo "== same runtime in both images"
 vmin="$(docker run --rm --entrypoint /usr/bin/node "$MIN" --version)"; vdbg="$(docker run --rm --entrypoint /usr/bin/node "$DBG" --version)"

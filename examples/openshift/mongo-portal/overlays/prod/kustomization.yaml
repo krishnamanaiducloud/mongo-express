@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Must match the Argo CD Application destination namespace.
+namespace: mongo-portal-prod
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/monitoring
+
+configMapGenerator:
+  - name: mongo-portal-config
+    behavior: replace
+    files:
+      - config.yaml
+
+# Production images are pinned by immutable digest (updated by the release
+# pipeline).
+images:
+  - name: docker.io/mohankrishna999/mongo-express
+    newName: docker.io/mohankrishna999/mongo-express
+    digest: sha256:7422334b3057a7852746a134ac86c30bf10a44e2b53e0e4336c8850b66ba3059
+
+patches:
+  - path: patch-rbac.yaml
+  - path: patch-networkpolicy.yaml

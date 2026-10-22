@@ -43,10 +43,13 @@ msg=http_request status>=500
 * **Upgrade:** merge the release digest PR; sync Argo CD. Users on replaced pods
   re-authenticate to MongoDB.
 * **Rotate keys/certs:** see [secrets.md](secrets.md).
-* **Change groups:** edit `config.yaml` *and* `patch-cluster-scope.yaml` in the overlay.
+* **Change groups or permissions:** edit `patch-rbac.yaml` (the `mongo-portal-rbac`
+  ConfigMap) and sync. It is applied live within 30 seconds; an invalid edit is
+  rejected and reported on the System status page. See [rbac.md](rbac.md).
 * **Add a MongoDB profile:** add to `config.yaml`, update egress NetworkPolicy.
-* **Terminate a user's sessions immediately:** remove them from the portal groups
-  (effective within 1 min) and/or restart the pods.
+* **Terminate a user's access:** remove them from the OpenShift groups
+  (effective at the next revalidation, at most 5 min) or deny them in the RBAC
+  policy (within 30 s), and/or restart the pods to end all MongoDB sessions.
 
 ## Incidents
 

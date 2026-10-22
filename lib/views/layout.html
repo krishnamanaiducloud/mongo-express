@@ -36,7 +36,26 @@
       <div class="dark-mode-toggle">
         <i id="darkModeIcon" class="fa fa-moon"></i>
       </div>
-      {% if enableLogout %}
+      {% if currentUser %}
+      <div class="nav-item dropdown user-menu ms-2">
+        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false" title="Signed in user">
+          {% if currentUser.source == 'openshift' %}<i class="fab fa-redhat me-1" aria-hidden="true"></i>{% else %}<i class="fa fa-user me-1" aria-hidden="true"></i>{% endif %}
+          {{ currentUser.name }}
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><span class="dropdown-item-text small text-muted">
+            {% if currentUser.source == 'openshift' %}Signed in with OpenShift{% elif currentUser.source == 'oidc' %}Signed in with OpenID Connect{% elif currentUser.source == 'local' %}Local account{% endif %}
+          </span></li>
+          <li><span class="dropdown-item-text">
+            {% if currentRoles.length %}{% for r in currentRoles %}<span class="badge bg-secondary me-1">{{ r }}</span>{% endfor %}{% else %}<span class="badge bg-danger">no role</span>{% endif %}
+          </span></li>
+          {% if enableLogout %}
+          <li><hr class="dropdown-divider"></li>
+          <li><a class="dropdown-item" href="{{ baseHref }}logout"><i class="fas fa-sign-out-alt me-1" aria-hidden="true"></i>Sign out</a></li>
+          {% endif %}
+        </ul>
+      </div>
+      {% elif enableLogout %}
       <div class="logout">
         <a href="{{ baseHref }}logout" class="btn">
           <i class="fas fa-sign-out-alt"></i>

@@ -1,0 +1,29 @@
+# Non-secret mongo-express settings. Secrets (connection string, cookie and
+# session secrets, basic-auth credentials) come from existing Secrets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo-express-config
+data:
+  # Local account (basic-auth credentials from the mongo-express-basicauth
+  # Secret). With OpenShift login enabled it signs in on the sign-in page and
+  # is the fallback while OpenShift is unreachable.
+  ME_CONFIG_BASICAUTH_ENABLED: "true"
+  # Built-in OpenShift login (like Argo CD): offered whenever the OAuth server
+  # is reachable; nothing fails when it is not.
+  ME_CONFIG_OPENSHIFT_OAUTH: auto
+  # RBAC: groups and roles from the mongo-express-rbac ConfigMap.
+  ME_CONFIG_RBAC_POLICY_DIR: /etc/mongo-express/rbac
+  ME_CONFIG_RBAC_DEFAULT_ROLE: role:readonly
+  ME_CONFIG_RBAC_LOCAL_ROLE: role:admin
+  # TLS in the pod with the service-CA certificate (Route re-encrypts).
+  ME_CONFIG_SITE_SSL_ENABLED: "true"
+  ME_CONFIG_SITE_SSL_CRT_PATH: /etc/tls/private/tls.crt
+  ME_CONFIG_SITE_SSL_KEY_PATH: /etc/tls/private/tls.key
+  ME_CONFIG_HEALTH_CHECK_PATH: /status
+  # Image default; set to "false" to hide server administration features.
+  ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+  ME_CONFIG_OPTIONS_CONFIRM_DELETE: "true"
+  # MongoDB TLS: set ME_CONFIG_MONGODB_TLS=true and mount the CA, see docs.
+  # Certificate verification stays on.
+  ME_CONFIG_MONGODB_TLS_ALLOW_CERTS: "false"

@@ -52,7 +52,7 @@ Reviewed exceptions (not suppressed in any scanner configuration):
 
 ## SecurityContextConstraints
 
-`deploy/cluster` (apply once per cluster, cluster-admin) creates:
+`examples/openshift/cluster` (apply once per cluster, cluster-admin) creates:
 
 | SCC | Used by | Policy |
 | --- | --- | --- |
@@ -65,7 +65,7 @@ with the `openshift.io/required-scc` annotation (OpenShift 4.14+), so
 admission fails loudly instead of silently choosing another SCC.
 
 ```bash
-oc apply -k deploy/cluster                       # cluster-admin, once
+oc apply -k examples/openshift/cluster                       # cluster-admin, once
 oc get scc mongo-express-restricted mongo-portal-restricted
 # after deploying, confirm the SCC used by the pods:
 oc get pods -n mongo-express-prod -o custom-columns=NAME:.metadata.name,SCC:.metadata.annotations.openshift\\.io/scc
@@ -78,13 +78,14 @@ and the RoleBinding.
 ## Deploying mongo-express
 
 ```
-deploy/mongo-express/
+examples/openshift/mongo-express/
   base/       Deployment, Service (service-CA TLS), re-encrypt Route,
-              ServiceAccount + SCC RoleBinding, ConfigMap, NetworkPolicies, PDB
-  overlays/dev   0.0.1-debug image
-  overlays/prod  0.0.1 image (pin by digest), 2 replicas
-deploy/argocd/mongo-express.yaml   AppProject + Applications (prod: manual sync)
-deploy/argocd/cluster.yaml         SCC prerequisites (manual sync, cluster-admin Argo CD)
+              ServiceAccount (OAuth client) + SCC RoleBinding, ConfigMap,
+              RBAC policy ConfigMap, NetworkPolicies, PDB
+  overlays/dev   debug image, dev group mapping
+  overlays/prod  minimal image (pinned by digest), 2 replicas, prod group mapping
+examples/openshift/argocd/mongo-express.yaml   AppProject + Applications (prod: manual sync)
+examples/openshift/argocd/cluster.yaml         SCC prerequisites (manual sync, cluster-admin Argo CD)
 ```
 
 Existing Secrets (never stored in Git):
@@ -107,17 +108,73 @@ Set the MongoDB namespace and pod labels in `overlays/*/patch-networkpolicy.yaml
 then:
 
 ```bash
-oc apply -k deploy/mongo-express/overlays/prod
+oc apply -k examples/openshift/mongo-express/overlays/prod
 oc rollout status deploy/mongo-express -n mongo-express-prod
 oc get route mongo-express -n mongo-express-prod -o jsonpath='https://{.spec.host}{"\n"}'
 ```
 
 Note: mongo-express connects to MongoDB with one shared account from
-`ME_CONFIG_MONGODB_URL`; every UI user acts with that account's privileges.
-Use a least-privilege MongoDB user, or use the portal for per-user access.
-For MongoDB TLS set `ME_CONFIG_MONGODB_TLS=true` and
-`ME_CONFIG_MONGODB_TLS_CA_FILE` (mount the CA from a ConfigMap and add it to
-the Deployment).
+`ME_CONFIG_MONGODB_URL`. The RBAC policy (below) decides what each UI user may
+do with that account. Use a least-privilege MongoDB user, or use the portal
+for per-user MongoDB authentication. For MongoDB TLS set
+`ME_CONFIG_MONGODB_TLS=true` and `ME_CONFIG_MONGODB_TLS_CA_FILE` (mount the CA
+from a ConfigMap and add it to the Deployment). Certificate verification is on
+by default (`ME_CONFIG_MONGODB_TLS_ALLOW_CERTS=false`).
+
+## OpenShift login (single sign-on)
+
+The manifests enable the built-in OpenShift login
+(`ME_CONFIG_OPENSHIFT_OAUTH=auto`), which works like Argo CD's OpenShift
+connector:
+
+* The `mongo-express` ServiceAccount is the OAuth client. Its annotation
+  `serviceaccounts.openshift.io/oauth-redirectreference.primary` points at the
+  Route, so the callback is `https://<route-host>/oauth/callback`. Its token
+  (`automountServiceAccountToken: true`) is the client secret. It has no API
+  permissions.
+* Users click **Log in with OpenShift**. The app exchanges the code (with PKCE)
+  and reads the user's name and groups with the user's own token (`users/~`).
+  The token stays in the server-side session and is re-checked every 5 minutes.
+* **Passive:** when the pod is not in OpenShift, or the API or OAuth server is
+  unreachable, the button is simply not shown. The **local account** (the
+  `mongo-express-basicauth` credentials) signs in on the same page, so the app
+  keeps working. Nothing fails at start-up.
+* `ME_CONFIG_OPENSHIFT_PUBLIC_URL` overrides the redirect origin, for example
+  behind an edge Route that forwards plain HTTP.
+
+## RBAC
+
+Argo CD-style policy in the `mongo-express-rbac` ConfigMap
+(`base/rbac-policy.yaml`, overridden per environment in
+`overlays/*/patch-rbac.yaml`), mounted at `/etc/mongo-express/rbac` and
+re-read every 30 seconds:
+
+```csv
+g, mongo-express-admins-prod, role:admin
+g, mongo-express-editors-prod, role:editor
+g, mongo-express-viewers-prod, role:readonly
+p, role:orders-team, documents, *, app/orders*, allow
+g, orders-team, role:orders-team
+```
+
+| Resource | Actions | Object |
+| --- | --- | --- |
+| `databases` | get, create, delete | `<db>` |
+| `collections` | get, create, update (rename, compact), delete | `<db>/<coll>` |
+| `documents` | get (view, export), create (add, import), update, delete | `<db>/<coll>` |
+| `indexes` | get, create (add, reindex), delete | `<db>/<coll>` |
+| `gridfs` | get, create, delete | `<db>/<bucket>` |
+| `server` | get, update | the connection form shown when MongoDB is unreachable |
+
+* Built-in roles: `role:readonly`, `role:editor` (document, index and GridFS
+  changes, creating collections) and `role:admin`.
+* OpenShift users the policy does not map get `ME_CONFIG_RBAC_DEFAULT_ROLE`
+  (`role:readonly`). The local account gets `ME_CONFIG_RBAC_LOCAL_ROLE`
+  (`role:admin`) and can also be addressed as `local:<username>`.
+* Every route is checked on the server. Lists show only databases and
+  collections the user may see, and the UI hides controls the user may not use.
+  A denied request gets a "Not permitted" page that names the missing permission.
+* An invalid policy edit is rejected (logged), and the previous policy stays active.
 
 ## Troubleshooting with the debug image
 

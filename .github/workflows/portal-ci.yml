@@ -1,6 +1,6 @@
 name: portal-ci
 
-# CI/CD for the MongoDB management portal (portal/ and deploy/).
+# CI/CD for the MongoDB management portal (portal/ and examples/openshift/).
 # Pull requests and pushes run every quality gate. Images are published only
 # from a `portal-v*` tag pushed to this repository, after all gates pass, and
 # only through the protected `release` environment. Nothing is deployed to a
@@ -8,10 +8,10 @@ name: portal-ci
 
 on:
   pull_request:
-    paths: ["portal/**", "deploy/**", ".github/workflows/portal-ci.yml"]
+    paths: ["portal/**", "examples/openshift/**", ".github/workflows/portal-ci.yml"]
   push:
     branches: [master]
-    paths: ["portal/**", "deploy/**", ".github/workflows/portal-ci.yml"]
+    paths: ["portal/**", "examples/openshift/**", ".github/workflows/portal-ci.yml"]
     tags: ["portal-v*"]
   workflow_dispatch:
 
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: deploy
+        working-directory: examples/openshift
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -102,9 +102,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/rendered
-          for env in dev test prod cluster mongo-express/overlays/dev mongo-express/overlays/prod; do
-            if [ -d "overlays/$env" ]; then dir="overlays/$env"; else dir="$env"; fi
-            env="$(echo "$env" | tr / _)"
+          for dir in mongo-portal/overlays/dev mongo-portal/overlays/test mongo-portal/overlays/prod cluster                      mongo-express/overlays/dev mongo-express/overlays/prod; do
+            env="$(echo "$dir" | tr / _)"
             kubectl kustomize "$dir" > "/tmp/rendered/$env.yaml"
             "$(go env GOPATH)/bin/kubeconform" -strict -summary -kubernetes-version 1.31.0 \
               -schema-location default \
@@ -115,10 +114,15 @@ jobs:
           "$(go env GOPATH)/bin/kubeconform" -strict -summary \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             argocd/*.yaml
-      - name: Guardrails (no MongoDB workloads, no fixed UIDs, no privileged)
+      - name: Guardrails (no MongoDB workloads, no fixed UIDs, no privileged, no cluster RBAC from apps)
         run: |
           ! grep -nE '^kind: (StatefulSet|PersistentVolumeClaim|Secret)$' /tmp/rendered/*.yaml
           ! grep -nE 'runAsUser:|fsGroup:|privileged: true' /tmp/rendered/*.yaml
+          ! grep -nE '^kind: (ClusterRole|ClusterRoleBinding)$' /tmp/rendered/mongo-*.yaml
+      - name: Portal configuration files are valid
+        working-directory: portal
+        run: |
+          for env in dev test; do go run ./cmd/portal --check-config --config "../examples/openshift/mongo-portal/overlays/$env/config.yaml"; done
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
@@ -134,7 +138,7 @@ jobs:
         with: { fetch-depth: 0, persist-credentials: false }
       - name: gitleaks
         working-directory: .
-        run: docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:latest dir /repo/portal /repo/deploy --no-banner --redact
+        run: docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:latest dir /repo/portal /repo/examples --no-banner --redact
 
   images:
     name: Images – build, smoke test, scan, SBOM
@@ -245,7 +249,7 @@ jobs:
             docker run --rm aquasec/trivy:latest image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE@$d"
           done
       - name: Pin production overlay to the new digest
-        working-directory: deploy/overlays/prod
+        working-directory: examples/openshift/mongo-portal/overlays/prod
         run: |
           sed -i "0,/digest: sha256:[0-9a-f]*/s//digest: ${{ steps.prod.outputs.digest }}/" kustomization.yaml
           kubectl kustomize . | grep -q "${{ steps.prod.outputs.digest }}"
@@ -255,7 +259,7 @@ jobs:
           title: "deploy(prod): pin mongo-portal ${{ steps.v.outputs.version }}"
           commit-message: "deploy(prod): pin mongo-portal ${{ steps.v.outputs.version }} (${{ steps.prod.outputs.digest }})"
           body: |
-            Pins `deploy/overlays/prod` to `${{ env.IMAGE }}@${{ steps.prod.outputs.digest }}`
+            Pins `examples/openshift/mongo-portal/overlays/prod` to `${{ env.IMAGE }}@${{ steps.prod.outputs.digest }}`
             (debug: `${{ steps.debug.outputs.digest }}`), built from ${{ github.sha }}.
             Sync `mongo-portal-prod` manually in Argo CD after review.
-          add-paths: deploy/overlays/prod/kustomization.yaml
+          add-paths: examples/openshift/mongo-portal/overlays/prod/kustomization.yaml

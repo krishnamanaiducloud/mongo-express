@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Outlet, useNavigate, useParams } from 'react-router';
 import {
   Button,
   Divider,
   Dropdown,
+  DropdownGroup,
   DropdownItem,
   DropdownList,
   Label,
@@ -14,6 +15,10 @@ import {
   MastheadMain,
   MastheadToggle,
   MenuToggle,
+  Modal,
+  ModalBody,
+  ModalHeader,
+  ModalVariant,
   Nav,
   NavGroup,
   NavItem,
@@ -32,55 +37,141 @@ import {
 } from '@patternfly/react-core';
 import {
   BarsIcon,
+  ClipboardCheckIcon,
   CubeIcon,
   DatabaseIcon,
+  HistoryIcon,
+  KeyboardIcon,
   LockIcon,
   MoonIcon,
+  SearchIcon,
   ServerIcon,
   SunIcon,
+  TachometerAltIcon,
   TerminalIcon,
   UnlockIcon,
-  UserIcon,
 } from '@patternfly/react-icons';
 import type { Me } from '../api/types';
-import { useCollections, useDatabases, useLogout, useSession } from '../api/hooks';
+import { useCollections, useDatabases, useLogout, useSession, useSignOut } from '../api/hooks';
 import { applyTheme, currentTheme, type Theme } from '../lib/theme';
-import { RoleLabel } from './Permission';
+import { rememberRecent } from '../lib/recent';
+import { CommandPalette, type PaletteAction } from './CommandPalette';
+import { IdentityLabel, SourceIcon, sourceDescription } from './Indicators';
+import { RolesLabel } from './Permission';
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+const modKey = isMac ? '⌘' : 'Ctrl';
+
+const shortcuts: [string, string][] = [
+  [`${modKey} K`, 'Open the command palette'],
+  ['/', 'Open the command palette'],
+  ['g then d', 'Go to databases'],
+  ['g then s', 'Go to the shell'],
+  ['g then p', 'Go to my permissions'],
+  ['g then t', 'Go to system status'],
+  ['g then a', 'Go to audit activity'],
+  ['?', 'Show keyboard shortcuts'],
+  ['Esc', 'Close dialogs'],
+];
+
+function typingTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el) return false;
+  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || !!el.closest?.('.portal-shell, .cm-editor');
+}
 
 export function AppLayout({ me }: { me: Me }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<Theme>(currentTheme());
   const [userOpen, setUserOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const session = useSession();
   const logout = useLogout();
+  const signOut = useSignOut();
   const navigate = useNavigate();
+  const { db, coll } = useParams();
+  const chord = useRef<number>(0);
 
-  const toggleTheme = () => {
-    const t = theme === 'dark' ? 'light' : 'dark';
+  useEffect(() => {
+    if (db) rememberRecent({ db, coll });
+  }, [db, coll]);
+
+  const toggleTheme = useCallback(() => {
+    const t = currentTheme() === 'dark' ? 'light' : 'dark';
     applyTheme(t);
     setTheme(t);
-  };
+  }, []);
 
-  const doLogout = async () => {
+  const doLogout = useCallback(async () => {
     setUserOpen(false);
     try {
       await logout.mutateAsync();
     } finally {
       navigate('/login?reason=logout', { replace: true });
     }
-  };
+  }, [logout, navigate]);
+
+  const doSignOut = useCallback(async () => {
+    setUserOpen(false);
+    let idpLogout = '';
+    try {
+      idpLogout = (await signOut.mutateAsync()).ssoLogoutURL;
+    } catch {
+      // best effort
+    }
+    if (idpLogout) window.location.assign(idpLogout);
+    else navigate('/login?reason=signedout', { replace: true });
+  }, [signOut, navigate]);
+
+  const onPaletteAction = useCallback(
+    (a: PaletteAction) => {
+      if (a === 'theme') toggleTheme();
+      if (a === 'shortcuts') setShortcutsOpen(true);
+      if (a === 'disconnect') void doLogout();
+      if (a === 'signout') void doSignOut();
+    },
+    [toggleTheme, doLogout, doSignOut],
+  );
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey || typingTarget(e.target)) return;
+      if (e.key === '/') {
+        e.preventDefault();
+        setPaletteOpen(true);
+      } else if (e.key === '?') {
+        setShortcutsOpen(true);
+      } else if (e.key === 'g') {
+        chord.current = Date.now();
+      } else if (Date.now() - chord.current < 1200) {
+        const dest: Record<string, string> = { d: '/', s: db ? `/shell?db=${encodeURIComponent(db)}` : '/shell', p: '/permissions', t: '/status', a: '/audit' };
+        if (dest[e.key]) {
+          e.preventDefault();
+          navigate(dest[e.key]);
+        }
+        chord.current = 0;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navigate, db]);
 
   const s = session.data;
+  const roles = s?.portalRoles ?? me.roles;
+  const identity = s?.identity ?? { user: me.user, source: me.source, groups: me.groups };
+
   const masthead = (
     <Masthead>
       <MastheadMain>
         <MastheadToggle>
-          <PageToggleButton
-            variant="plain"
-            aria-label="Toggle navigation"
-            isSidebarOpen={sidebarOpen}
-            onSidebarToggle={() => setSidebarOpen((o) => !o)}
-          >
+          <PageToggleButton variant="plain" aria-label="Toggle navigation" isSidebarOpen={sidebarOpen} onSidebarToggle={() => setSidebarOpen((o) => !o)}>
             <BarsIcon />
           </PageToggleButton>
         </MastheadToggle>
@@ -95,6 +186,11 @@ export function AppLayout({ me }: { me: Me }) {
       <MastheadContent>
         <Toolbar isFullHeight isStatic>
           <ToolbarContent>
+            <ToolbarItem visibility={{ default: 'hidden', lg: 'visible' }}>
+              <Button variant="secondary" className="portal-palette-trigger" icon={<SearchIcon />} onClick={() => setPaletteOpen(true)} aria-label="Open command palette">
+                Jump to… <kbd>{modKey} K</kbd>
+              </Button>
+            </ToolbarItem>
             <ToolbarGroup align={{ default: 'alignEnd' }} gap={{ default: 'gapMd' }}>
               {me.environment && (
                 <ToolbarItem visibility={{ default: 'hidden', md: 'visible' }}>
@@ -111,7 +207,7 @@ export function AppLayout({ me }: { me: Me }) {
                 </ToolbarItem>
               )}
               <ToolbarItem>
-                <RoleLabel role={me.role} />
+                <RolesLabel roles={roles} compact />
               </ToolbarItem>
               <ToolbarItem>
                 <Button
@@ -127,23 +223,41 @@ export function AppLayout({ me }: { me: Me }) {
                   onOpenChange={setUserOpen}
                   popperProps={{ position: 'right' }}
                   toggle={(ref) => (
-                    <MenuToggle ref={ref} variant="plainText" icon={<UserIcon />} onClick={() => setUserOpen((o) => !o)} isExpanded={userOpen}>
-                      {s ? `${s.mongoUser} (${me.user})` : me.user}
+                    <MenuToggle ref={ref} variant="plainText" icon={<SourceIcon source={identity.source} />} onClick={() => setUserOpen((o) => !o)} isExpanded={userOpen}>
+                      {s ? `${s.mongoUser}${identity.source !== 'mongodb' ? ` (${identity.user})` : ''}` : identity.user}
                     </MenuToggle>
                   )}
                 >
+                  <DropdownGroup label={sourceDescription(identity.source)}>
+                    <DropdownList>
+                      <DropdownItem key="id" isDisabled description={(identity.groups ?? []).slice(0, 4).join(', ') || undefined}>
+                        <IdentityLabel user={identity.user} source={identity.source} />
+                      </DropdownItem>
+                    </DropdownList>
+                  </DropdownGroup>
+                  <Divider component="li" />
                   <DropdownList>
-                    <DropdownItem key="session" onClick={() => { setUserOpen(false); navigate('/session'); }}>
+                    <DropdownItem key="perm" icon={<ClipboardCheckIcon />} onClick={() => { setUserOpen(false); navigate('/permissions'); }}>
+                      My permissions
+                    </DropdownItem>
+                    <DropdownItem key="session" icon={<LockIcon />} onClick={() => { setUserOpen(false); navigate('/session'); }}>
                       Session &amp; security
                     </DropdownItem>
+                    <DropdownItem key="status" icon={<TachometerAltIcon />} onClick={() => { setUserOpen(false); navigate('/status'); }}>
+                      System status
+                    </DropdownItem>
+                    <DropdownItem key="keys" icon={<KeyboardIcon />} onClick={() => { setUserOpen(false); setShortcutsOpen(true); }}>
+                      Keyboard shortcuts
+                    </DropdownItem>
+                  </DropdownList>
+                  <Divider component="li" />
+                  <DropdownList>
                     <DropdownItem key="logout" onClick={() => void doLogout()}>
                       Disconnect from MongoDB
                     </DropdownItem>
-                    {me.ssoLogoutURL && (
-                      <DropdownItem key="sso" to={me.ssoLogoutURL}>
-                        Sign out of corporate SSO
-                      </DropdownItem>
-                    )}
+                    <DropdownItem key="signout" onClick={() => void doSignOut()} description={identity.source === 'openshift' ? 'Ends the OpenShift sign-in of this browser too' : undefined}>
+                      Sign out
+                    </DropdownItem>
                   </DropdownList>
                 </Dropdown>
               </ToolbarItem>
@@ -170,6 +284,24 @@ export function AppLayout({ me }: { me: Me }) {
         </div>
       )}
       <Outlet />
+      <CommandPalette isOpen={paletteOpen} onClose={closePalette} onAction={onPaletteAction} />
+      <Modal variant={ModalVariant.small} isOpen={shortcutsOpen} onClose={() => setShortcutsOpen(false)} aria-labelledby="shortcuts-title">
+        <ModalHeader title="Keyboard shortcuts" labelId="shortcuts-title" />
+        <ModalBody>
+          <table className="portal-shortcuts">
+            <tbody>
+              {shortcuts.map(([k, d]) => (
+                <tr key={k}>
+                  <td>
+                    {k.split(' ').map((part, i) => (part === 'then' ? <span key={i}> then </span> : <kbd key={i}>{part}</kbd>))}
+                  </td>
+                  <td>{d}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ModalBody>
+      </Modal>
     </Page>
   );
 }
@@ -226,10 +358,16 @@ function Sidebar() {
           <NavItem icon={<ServerIcon />}>
             <NavLink to="/server">Server</NavLink>
           </NavItem>
+          <NavItem icon={<ClipboardCheckIcon />}>
+            <NavLink to="/permissions">My permissions</NavLink>
+          </NavItem>
+          <NavItem icon={<TachometerAltIcon />}>
+            <NavLink to="/status">System status</NavLink>
+          </NavItem>
           <NavItem icon={<LockIcon />}>
             <NavLink to="/session">Session &amp; security</NavLink>
           </NavItem>
-          <NavItem>
+          <NavItem icon={<HistoryIcon />}>
             <NavLink to="/audit">Audit activity</NavLink>
           </NavItem>
         </NavList>

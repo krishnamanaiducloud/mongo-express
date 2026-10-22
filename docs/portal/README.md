@@ -4,15 +4,16 @@ A Mongo Express–style web portal for MongoDB on OpenShift, where every databas
 operation runs as the signed-in user's **own MongoDB account**.
 
 The portal lives in [`portal/`](../../portal) (Go backend + React UI) and is
-deployed with [`deploy/`](../../deploy) (Kustomize + Argo CD). It is separate from
-the Node.js mongo-express application at the repository root, which is unchanged.
+deployed with [`examples/openshift/`](../../examples/openshift) (Kustomize + Argo CD). It is separate from
+the Node.js mongo-express application at the repository root ([docs](../mongo-express-openshift.md)).
 
 | Document | Contents |
 | --- | --- |
 | [architecture.md](architecture.md) | Components, request flow, authentication and authorization model |
 | [configuration.md](configuration.md) | Every configuration key, TLS and non-TLS profiles |
 | [deployment.md](deployment.md) | Step-by-step OpenShift deployment, discovery commands |
-| [oauth.md](oauth.md) | OpenShift OAuth proxy integration and group authorization |
+| [oauth.md](oauth.md) | Built-in OpenShift login (Argo CD style), passive behaviour, troubleshooting |
+| [rbac.md](rbac.md) | Argo CD-style RBAC: policy format, roles, examples, where it is enforced |
 | [mongodb-rbac.md](mongodb-rbac.md) | Creating developer and SRE MongoDB users |
 | [secrets.md](secrets.md) | Required Secrets and keys (no values) |
 | [gitops.md](gitops.md) | Argo CD setup, scoping, release flow |

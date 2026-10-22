@@ -1,8 +1,9 @@
 // End-to-end test of the in-browser mongosh shell in a real Chromium.
 //
 // Verifies that mongosh runs, that its sandbox is isolated (no cookies, no
-// network, no access to the portal page), that the portal role is enforced,
-// and that destructive operations require confirmation.
+// network, no access to the portal page), that portal RBAC is enforced, that
+// destructive operations require confirmation, and that the portal works
+// without any SSO (MongoDB-only sign-in) with RBAC applied to the MongoDB user.
 import { chromium } from 'playwright';
 
 const BASE = process.env.BASE ?? 'http://localhost:8080';
@@ -18,7 +19,8 @@ const check = (cond, m) => (cond ? ok(m) : bad(m));
 const browser = await chromium.launch();
 
 async function session(user, groups, mongoUser, password) {
-  const ctx = await browser.newContext({ extraHTTPHeaders: { 'X-Forwarded-User': user, 'X-Forwarded-Groups': groups } });
+  // user === null: no SSO at all (MongoDB-only sign-in).
+  const ctx = await browser.newContext(user === null ? {} : { extraHTTPHeaders: { 'X-Forwarded-User': user, 'X-Forwarded-Groups': groups } });
   const page = await ctx.newPage();
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warning') console.log(`    [console] ${m.text().slice(0, 200)}`);
@@ -71,7 +73,7 @@ try {
   check(/read-only|PortalPolicyError/.test(out), `developer write refused: ${out.slice(-100)}`);
 
   out = await run(p, 'db.orders.aggregate([{ $out: "stolen" }])');
-  check(/not permitted|write stage/i.test(out), `developer $out refused: ${out.slice(-100)}`);
+  check(/not permitted|write stage|does not allow/i.test(out), `developer $out refused: ${out.slice(-100)}`);
 
   out = await run(p, 'db.orders.find({ $where: "sleep(100) || true" }).toArray()');
   check(/JavaScript is not permitted|\$where/.test(out), `$where refused: ${out.slice(-100)}`);
@@ -162,6 +164,58 @@ try {
   out = await run(q, '1 + 1');
   check(/\b2\b/.test(out.split('1 + 1')[1] ?? ''), 'shell recovers after interrupting an infinite loop');
   await sre.ctx.close();
+
+  console.log('== no SSO: MongoDB-only sign-in, RBAC on the MongoDB user');
+  const anon = await browser.newContext();
+  const a = await anon.newPage();
+  await a.goto(`${BASE}/login`);
+  const formShown = await a.waitForSelector('form[aria-label="MongoDB login"]', { timeout: 30000 }).then(() => true, () => false);
+  check(formShown, 'login form shown directly when no SSO is used');
+  check(!(await a.isVisible('text=Log in with OpenShift')), 'OpenShift login not offered when it is disabled');
+  check((await a.locator('.pf-v6-c-alert.pf-m-danger').count()) === 0, 'no error shown for the missing SSO');
+  await anon.close();
+
+  const mo = await session(null, '', 'writer', PW.writer);
+  const m = mo.page;
+  out = await run(m, 'db.mo_e2e.insertOne({ via: "mongodb-only" })');
+  check(out.includes('insertedId'), `mapped MongoDB user (role:editor) can write: ${out.slice(-80)}`);
+  // role:editor may not drop collections: the server refuses even after the
+  // user confirms in the UI.
+  await m.fill('#shell-input', 'db.mo_e2e.drop()');
+  await m.press('#shell-input', 'Enter');
+  await m.waitForSelector('text=Confirm dropCollection', { timeout: 20000 });
+  await m.fill('#shell-confirm-input', 'mo_e2e');
+  await m.click('button:has-text("Run dropCollection")');
+  await m.waitForFunction(() => !document.querySelector('[aria-label="Running"]'));
+  out = (await m.locator('.portal-shell-entry').last().innerText()).replace(/\s+/g, ' ');
+  check(/does not allow|not permitted/i.test(out), `role:editor cannot drop collections (server-side RBAC): ${out.slice(-100)}`);
+  await m.goto(`${BASE}/permissions`);
+  await m.waitForSelector('text=My permissions');
+  check(await m.isVisible('text=mongodb:writer@admin'), 'permissions page shows the MongoDB identity as RBAC subject');
+  check(await m.isVisible('text=role:editor'), 'permissions page shows the mapped role');
+  await m.fill('input[aria-label="Object"]', 'app/orders');
+  await m.waitForSelector('text=/Allowed by the portal|Denied by the portal/');
+  check(await m.isVisible('text=/Allowed by the portal: update documents on app\/orders/'), 'access check evaluates the policy');
+  await m.goto(`${BASE}/status`);
+  await m.waitForSelector('text=System status');
+  check(await m.isVisible('text=Not offered'), 'status page reports OpenShift sign-in as not offered (no error)');
+  check(await m.isVisible('text=/Online/'), 'status page shows the MongoDB deployment online');
+  await m.goto(`${BASE}/`);
+  // The shortcut is registered once the layout has rendered.
+  await m.waitForSelector('button[aria-label="Open command palette"]', { timeout: 30000 });
+  await m.waitForSelector('text=Databases');
+  await m.keyboard.press('Control+k');
+  await m.waitForSelector('input[aria-label="Search databases, collections, pages and actions"]', { timeout: 20000 });
+  await m.waitForSelector('.portal-palette-item >> text=app');
+  await m.keyboard.type('app');
+  await m.keyboard.press('Enter');
+  await m.waitForURL(`${BASE}/db/app`, { timeout: 10000 }).then(() => ok('command palette navigates to a database'), () => bad(`palette navigation: ${m.url()}`));
+  await mo.ctx.close();
+
+  const ro = await session(null, '', 'reader', PW.reader);
+  out = await run(ro.page, 'db.orders.insertOne({ x: 1 })');
+  check(/read-only|not permitted|does not allow|PortalPolicyError/i.test(out), `unmapped MongoDB user gets the default read-only role: ${out.slice(-80)}`);
+  await ro.ctx.close();
 } catch (e) {
   bad(`unexpected error: ${e.message}`);
 } finally {

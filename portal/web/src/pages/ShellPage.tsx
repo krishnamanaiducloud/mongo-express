@@ -39,7 +39,10 @@ type Status = 'starting' | 'ready' | 'failed';
 export function ShellPage() {
   const [params] = useSearchParams();
   const session = useSession();
-  const canWrite = session.data?.canWrite ?? false;
+  // UI hint: whether RBAC allows any change anywhere. Each operation is
+  // checked by the portal against its namespace and by MongoDB.
+  const perms = session.data?.permissions ?? {};
+  const canWrite = ['documents:create', 'documents:update', 'documents:delete', 'indexes:create', 'indexes:delete', 'collections:create', 'collections:delete', 'databases:delete'].some((k) => perms[k]);
   const profile = session.data?.profile ?? 'portal';
   const initialDb = params.get('db') || 'test';
   const hasSession = !!session.data;
@@ -200,7 +203,7 @@ export function ShellPage() {
         and is checked against your role and MongoDB privileges.
       </Content>
       {!canWrite && (
-        <Alert variant="info" isInline isPlain className="pf-v6-u-mb-sm" title="Read-only portal role: write operations are rejected." />
+        <Alert variant="info" isInline isPlain className="pf-v6-u-mb-sm" title="Your portal role is read-only: write operations are rejected." />
       )}
       {status === 'failed' && (
         <Alert variant="danger" isInline className="pf-v6-u-mb-sm" title={startError ?? 'The shell failed to start'}>

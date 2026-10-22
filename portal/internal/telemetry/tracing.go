@@ -42,6 +42,11 @@ func Setup(ctx context.Context, version string) (func(context.Context) error, er
 	return tp.Shutdown, nil
 }
 
+// Enabled reports whether an OTLP endpoint is configured.
+func Enabled() bool {
+	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != ""
+}
+
 // Start starts a span using the global provider.
 func Start(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return otel.Tracer(Tracer).Start(ctx, name, opts...)

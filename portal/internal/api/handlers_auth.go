@@ -3,56 +3,184 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/audit"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/config"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/identity"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/mongoconn"
+	"github.com/krishnamanaiducloud/mongo-express/portal/internal/rbac"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/session"
 )
 
+// authOptions tells the UI which sign-in methods are available right now.
+func (s *Server) authOptions() map[string]any {
+	src := s.Identity.Sources()
+	return map[string]any{
+		"openshift":    src.OpenShift,
+		"openshiftURL": oauthStartPath,
+		"header":       src.Header,
+		"dev":          src.Dev,
+		"requireSSO":   src.RequireSSO,
+		// MongoDB-only login is possible unless SSO is required.
+		"mongodbLogin": !src.RequireSSO,
+	}
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
-	_, err := s.Store.Get(rc.secret, rc.id.User)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"user":         rc.id.User,
-		"groups":       rc.id.Groups,
-		"role":         rc.id.Role,
-		"canWrite":     rc.id.Role.CanWrite(),
-		"csrfToken":    s.preauthToken(rc.id.User, time.Now()),
-		"hasSession":   err == nil,
-		"ssoLogoutURL": s.Config.Identity.SSOLogoutURL,
-		"environment":  s.Config.Environment,
-		"build":        s.Build,
-	})
+	binding := s.ensurePreCookie(w, r, rc)
+	hasSession := false
+	if rc.p != nil {
+		_, err := s.Store.Get(rc.secret, rc.owner)
+		hasSession = err == nil
+	}
+	resp := map[string]any{
+		"authenticated": rc.p != nil,
+		"user":          rc.user(),
+		"source":        rc.source(),
+		"sso":           rc.p.SSO(),
+		"groups":        []string{},
+		"roles":         []string{},
+		"permissions":   s.globalPermissions(rc),
+		"csrfToken":     s.preauthToken(binding, time.Now()),
+		"hasSession":    hasSession,
+		"ssoLogoutURL":  s.Config.Identity.SSOLogoutURL,
+		"environment":   s.Config.Environment,
+		"build":         s.Build,
+		"auth":          s.authOptions(),
+	}
+	if rc.p != nil {
+		if rc.p.Groups != nil {
+			resp["groups"] = rc.p.Groups
+		}
+		if roles := s.roles(rc); roles != nil {
+			resp["roles"] = roles
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// globalPermissions are UI hints for controls that are not tied to one
+// namespace. Every request is still checked against its concrete object.
+func (s *Server) globalPermissions(rc *reqCtx) map[string]bool {
+	out := map[string]bool{}
+	if rc.p == nil {
+		return out
+	}
+	pol, subj := s.RBAC.Policy(), rc.p.Subjects()
+	for res, acts := range rbac.Actions {
+		for _, a := range acts {
+			out[string(res)+":"+string(a)] = pol.Possible(subj, res, a)
+		}
+	}
+	out["audit:all"] = pol.Allowed(subj, rbac.Audit, rbac.Get, "all")
+	return out
+}
+
+// handlePermissions explains the principal's RBAC roles and rules.
+func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
+	pol := s.RBAC.Policy()
+	subj := rc.p.Subjects()
+	rules := pol.RulesFor(subj)
+	if rules == nil {
+		rules = []rbac.Rule{}
+	}
+	direct := pol.DirectRoles(subj)
+	if direct == nil {
+		direct = []string{}
+	}
+	resp := map[string]any{
+		"user": rc.p.User, "source": rc.p.Source, "subjects": subj,
+		"roles": pol.Roles(subj), "directRoles": direct, "defaultRole": pol.DefaultRole(),
+		"rules": rules, "policy": s.RBAC.Status(),
+	}
+	// Optional access check: ?resource=documents&action=update&object=app/orders
+	if q := r.URL.Query(); q.Get("resource") != "" {
+		res, act, obj := rbac.Resource(q.Get("resource")), rbac.Action(q.Get("action")), q.Get("object")
+		acts, ok := rbac.Actions[res]
+		if !ok || !slices.Contains(acts, act) || obj == "" || len(obj) > 512 {
+			writeError(w, r, http.StatusBadRequest, "invalid_input", "resource, action and object must name a valid permission")
+			return
+		}
+		resp["check"] = map[string]any{"resource": res, "action": act, "object": obj, "allowed": pol.Allowed(subj, res, act, obj)}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleStatus reports the state of optional integrations. Everything here
+// is informational: an unavailable integration is a state, not an error.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
+	profiles := make([]map[string]any, 0, len(s.Config.Profiles))
+	for i := range s.Config.Profiles {
+		p := &s.Config.Profiles[i]
+		profiles = append(profiles, map[string]any{"name": p.Name, "displayName": p.DisplayName, "health": s.healthFor(rc, p.Name)})
+	}
+	resp := map[string]any{
+		"auth":     s.authOptions(),
+		"profiles": profiles,
+		"build":    s.Build,
+	}
+	if rc.p != nil {
+		// Operational details only for signed-in users.
+		resp["rbac"] = s.RBAC.Status()
+		resp["tracing"] = s.TracingEnabled
+		resp["shell"] = s.Config.ShellEnabled()
+		resp["sessions"] = map[string]any{"active": s.Store.Count(), "max": s.Config.Session.MaxTotal}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) profileHealth(name string) mongoconn.Health {
+	if s.Monitor == nil {
+		return mongoconn.Health{State: mongoconn.HealthDisabled}
+	}
+	return s.Monitor.Health(name)
+}
+
+// healthFor returns profile health; anonymous callers see only the state and
+// latency (no replica set names or error details).
+func (s *Server) healthFor(rc *reqCtx, name string) mongoconn.Health {
+	h := s.profileHealth(name)
+	if rc.p == nil {
+		h.Reason, h.SetName = "", ""
+	}
+	return h
 }
 
 type profileView struct {
-	Name              string   `json:"name"`
-	DisplayName       string   `json:"displayName"`
-	Description       string   `json:"description,omitempty"`
-	DefaultAuthSource string   `json:"defaultAuthSource"`
-	AuthMechanisms    []string `json:"authMechanisms"`
-	TLSMode           string   `json:"tlsMode"`
-	ClientCertificate bool     `json:"clientCertificate"`
-	PlaintextWarning  bool     `json:"plaintextWarning"`
-	ReplicaSet        string   `json:"replicaSet,omitempty"`
+	Name              string           `json:"name"`
+	DisplayName       string           `json:"displayName"`
+	Description       string           `json:"description,omitempty"`
+	DefaultAuthSource string           `json:"defaultAuthSource"`
+	AuthMechanisms    []string         `json:"authMechanisms"`
+	TLSMode           string           `json:"tlsMode"`
+	ClientCertificate bool             `json:"clientCertificate"`
+	PlaintextWarning  bool             `json:"plaintextWarning"`
+	ReplicaSet        string           `json:"replicaSet,omitempty"`
+	Health            mongoconn.Health `json:"health"`
 }
 
-func viewProfile(p *config.Profile) profileView {
+func (s *Server) viewProfile(rc *reqCtx, p *config.Profile) profileView {
 	return profileView{
 		Name: p.Name, DisplayName: p.DisplayName, Description: p.Description,
 		DefaultAuthSource: p.DefaultAuthSource, AuthMechanisms: p.AuthMechanisms,
 		TLSMode: p.TLS.Mode, ClientCertificate: p.TLS.ClientCertFile != "",
 		PlaintextWarning: p.TLS.Mode == config.TLSDisabled, ReplicaSet: p.ReplicaSet,
+		Health: s.healthFor(rc, p.Name),
 	}
 }
 
 func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
+	if s.Config.Identity.RequireSSO && !rc.p.SSO() {
+		writeError(w, r, http.StatusUnauthorized, "sso_required", "Sign in with single sign-on to continue")
+		return
+	}
 	out := make([]profileView, 0, len(s.Config.Profiles))
 	for i := range s.Config.Profiles {
-		out = append(out, viewProfile(&s.Config.Profiles[i]))
+		out = append(out, s.viewProfile(rc, &s.Config.Profiles[i]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": out})
 }
@@ -66,6 +194,10 @@ type loginRequest struct {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
+	if s.Config.Identity.RequireSSO && !rc.p.SSO() {
+		writeError(w, r, http.StatusUnauthorized, "sso_required", "Sign in with single sign-on before connecting to MongoDB")
+		return
+	}
 	var req loginRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -85,10 +217,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 		return
 	}
 
-	ev := audit.Event{RequestID: rc.requestID, SSOUser: rc.id.User, PortalRole: string(rc.id.Role),
-		MongoUser: cred.Username + "@" + cred.AuthSource, Profile: p.Name, Action: "mongodb_login"}
+	// Without SSO the MongoDB user is the principal (and RBAC subject).
+	principal, limiterKey := rc.p, "sso\x00"+rc.owner
+	if !rc.p.SSO() {
+		principal, limiterKey = identity.MongoDBPrincipal(cred.Username, cred.AuthSource), "ip\x00"+clientIP(r)
+	}
+	ev := audit.Event{RequestID: rc.requestID, SSOUser: principal.User, Identity: string(principal.Source), Owner: principal.Key(),
+		PortalRole: strings.Join(s.RBAC.Policy().Roles(principal.Subjects()), " "),
+		MongoUser:  cred.Username + "@" + cred.AuthSource, Profile: p.Name, Action: "mongodb_login"}
 	target := p.Name + "\x00" + cred.AuthSource + "\x00" + cred.Username
-	if ok, wait := s.limiter.Allow("sso\x00"+rc.id.User, target); !ok {
+	if ok, wait := s.limiter.Allow(limiterKey, target); !ok {
 		s.Metrics.AuthAttempts.WithLabelValues("mongodb", "rate_limited").Inc()
 		ev.Outcome, ev.Reason = audit.Denied, "rate limited"
 		s.Audit.Record(r.Context(), ev)
@@ -135,7 +273,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 	s.limiter.Success(target)
 
 	sess := &session.Session{
-		SSOUser: rc.id.User, PortalRole: rc.id.Role, Profile: p.Name,
+		Owner: principal.Key(), Principal: principal, Profile: p.Name,
 		MongoUser: cred.Username, AuthSource: cred.AuthSource, Mechanism: res.Mechanism,
 		TLS: res.TLSEnabled, Client: res.Client, Status: res.Status, UserAgent: truncateUA(r.UserAgent()),
 	}
@@ -157,8 +295,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 	if !res.TLSEnabled {
 		s.Logger.Warn("mongodb session established without TLS", "profile", p.Name, "request_id", rc.requestID)
 	}
-	rc.sess = sess
-	writeJSON(w, http.StatusOK, s.sessionView(sess, rc.id))
+	rc.p, rc.owner, rc.sess = principal, principal.Key(), sess
+	writeJSON(w, http.StatusOK, s.sessionView(rc))
 }
 
 func truncateUA(ua string) string {
@@ -179,7 +317,8 @@ func safeErr(e *mongoconn.Error) string {
 	return s
 }
 
-func (s *Server) sessionView(sess *session.Session, id *identity.Identity) map[string]any {
+func (s *Server) sessionView(rc *reqCtx) map[string]any {
+	sess := rc.sess
 	idle := s.Config.Session.IdleTimeout
 	var roles any = []any{}
 	if sess.Status != nil {
@@ -192,8 +331,9 @@ func (s *Server) sessionView(sess *session.Session, id *identity.Identity) map[s
 		"authSource":         sess.AuthSource,
 		"mechanism":          sess.Mechanism,
 		"tls":                sess.TLS,
-		"portalRole":         id.Role,
-		"canWrite":           id.Role.CanWrite(),
+		"identity":           rc.p,
+		"portalRoles":        s.roles(rc),
+		"permissions":        s.globalPermissions(rc),
 		"mongoRoles":         roles,
 		"createdAt":          sess.CreatedAt.UTC(),
 		"expiresAt":          sess.ExpiresAt.UTC(),
@@ -202,13 +342,13 @@ func (s *Server) sessionView(sess *session.Session, id *identity.Identity) map[s
 		"csrfToken":          sess.CSRFToken,
 	}
 	if p, ok := s.Config.Profile(sess.Profile); ok {
-		view["profileInfo"] = viewProfile(p)
+		view["profileInfo"] = s.viewProfile(rc, p)
 	}
 	return view
 }
 
 func (s *Server) handleSessionInfo(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
-	writeJSON(w, http.StatusOK, s.sessionView(rc.sess, rc.id))
+	writeJSON(w, http.StatusOK, s.sessionView(rc))
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
@@ -219,12 +359,27 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, rc *reqCtx
 	writeJSON(w, http.StatusOK, map[string]any{"loggedOut": true, "ssoLogoutURL": s.Config.Identity.SSOLogoutURL})
 }
 
+// handleSignOut ends the portal sign-in completely: the MongoDB session of
+// this browser and the OpenShift sign-in.
+func (s *Server) handleSignOut(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
+	if rc.secret != "" {
+		s.Store.Delete(rc.secret, "logout")
+		s.clearCookie(w)
+		s.Metrics.ActiveSessions.Set(float64(s.Store.Count()))
+	}
+	if rc.p != nil {
+		s.Audit.Record(r.Context(), s.baseEvent(rc, "sign_out", audit.Success, ""))
+	}
+	s.Identity.SignOut(w)
+	writeJSON(w, http.StatusOK, map[string]any{"signedOut": true, "ssoLogoutURL": s.Config.Identity.SSOLogoutURL})
+}
+
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	current := ""
-	if sess, err := s.Store.Get(rc.secret, rc.id.User); err == nil {
+	if sess, err := s.Store.Get(rc.secret, rc.owner); err == nil {
 		current = sess.Handle
 	}
-	list := s.Store.ListByUser(rc.id.User)
+	list := s.Store.ListByOwner(rc.owner)
 	out := make([]map[string]any, 0, len(list))
 	for _, x := range list {
 		out = append(out, map[string]any{
@@ -238,12 +393,12 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, rc *
 
 func (s *Server) handleTerminateSession(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	h := r.PathValue("handle")
-	if !s.Store.DeleteByHandle(rc.id.User, h, "terminated") {
+	if !s.Store.DeleteByHandle(rc.owner, h, "terminated") {
 		writeError(w, r, http.StatusNotFound, "not_found", "Session not found")
 		return
 	}
 	s.Metrics.ActiveSessions.Set(float64(s.Store.Count()))
-	s.Audit.Record(r.Context(), audit.Event{RequestID: rc.requestID, SSOUser: rc.id.User, PortalRole: string(rc.id.Role), Action: "session_terminate", Outcome: audit.Success})
+	s.Audit.Record(r.Context(), s.baseEvent(rc, "session_terminate", audit.Success, ""))
 	writeJSON(w, http.StatusOK, map[string]any{"terminated": true})
 }
 
@@ -252,8 +407,8 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	scope := rc.id.User
-	if rc.id.Role == identity.RoleSRE && r.URL.Query().Get("scope") == "all" {
+	scope := rc.owner
+	if r.URL.Query().Get("scope") == "all" && s.allowed(rc, rbac.Audit, rbac.Get, "all") {
 		scope = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -263,11 +418,15 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 	})
 }
 
-// onSessionClosed is wired into the session store.
+// OnSessionClosed is wired into the session store.
 func (s *Server) OnSessionClosed(sess *session.Session, reason string) {
 	s.Metrics.SessionsClosed.WithLabelValues(reason).Inc()
 	s.Metrics.ActiveSessions.Set(float64(s.Store.Count()))
 	if reason != "logout" {
-		s.Audit.Record(context.Background(), audit.Event{SSOUser: sess.SSOUser, MongoUser: sess.MongoUser + "@" + sess.AuthSource, Profile: sess.Profile, Action: "session_closed", Outcome: audit.Success, Reason: reason})
+		e := audit.Event{Owner: sess.Owner, MongoUser: sess.MongoUser + "@" + sess.AuthSource, Profile: sess.Profile, Action: "session_closed", Outcome: audit.Success, Reason: reason}
+		if sess.Principal != nil {
+			e.SSOUser, e.Identity = sess.Principal.User, string(sess.Principal.Source)
+		}
+		s.Audit.Record(context.Background(), e)
 	}
 }

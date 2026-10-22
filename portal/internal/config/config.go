@@ -19,11 +19,21 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Identity modes.
+// Deprecated identity.mode values, still accepted and mapped onto the
+// identity sources below.
 const (
 	IdentityOpenShift = "openshift"
 	IdentityHeader    = "header"
 	IdentityDev       = "dev"
+)
+
+// OpenShift SSO enablement. "auto" offers OpenShift login whenever the
+// portal runs in an OpenShift cluster whose OAuth server is reachable, and
+// stays silent otherwise.
+const (
+	EnabledAuto  = "auto"
+	EnabledTrue  = "true"
+	EnabledFalse = "false"
 )
 
 // TLS modes for MongoDB connection profiles. There is intentionally no
@@ -40,25 +50,31 @@ const DevIdentityGateEnv = "PORTAL_ALLOW_INSECURE_DEV_IDENTITY"
 type Config struct {
 	// Environment is a free-form label (dev, test, prod). The value
 	// "production" or "prod" enables stricter startup checks.
-	Environment string         `yaml:"environment"`
-	Server      ServerConfig   `yaml:"server"`
-	Identity    IdentityConfig `yaml:"identity"`
-	Session     SessionConfig  `yaml:"session"`
-	Query       QueryConfig    `yaml:"query"`
-	Login       LoginConfig    `yaml:"login"`
-	Audit       AuditConfig    `yaml:"audit"`
-	Shell       ShellConfig    `yaml:"shell"`
-	Profiles    []Profile      `yaml:"profiles"`
+	Environment string           `yaml:"environment"`
+	Server      ServerConfig     `yaml:"server"`
+	Identity    IdentityConfig   `yaml:"identity"`
+	RBAC        RBACConfig       `yaml:"rbac"`
+	Session     SessionConfig    `yaml:"session"`
+	Query       QueryConfig      `yaml:"query"`
+	Login       LoginConfig      `yaml:"login"`
+	Audit       AuditConfig      `yaml:"audit"`
+	Shell       ShellConfig      `yaml:"shell"`
+	Monitoring  MonitoringConfig `yaml:"monitoring"`
+	Profiles    []Profile        `yaml:"profiles"`
 }
 
 type ServerConfig struct {
-	// ListenAddress serves the UI and API. In OpenShift it must be a loopback
-	// address so only the OAuth proxy sidecar can reach it.
+	// ListenAddress serves the UI and API.
 	ListenAddress string `yaml:"listenAddress"`
 	// OpsListenAddress serves /healthz, /readyz and /metrics only.
 	OpsListenAddress string `yaml:"opsListenAddress"`
+	// TLS serves ListenAddress over HTTPS when set (for example with the
+	// OpenShift service CA certificate behind a re-encrypt Route). The
+	// certificate is reloaded when the files change.
+	TLS ServerTLSConfig `yaml:"tls"`
 	// PublicOrigin is the externally visible origin (https://host). When set,
-	// unsafe requests must carry a matching Origin header.
+	// unsafe requests must carry a matching Origin header and OAuth redirect
+	// URIs are built from it.
 	PublicOrigin    string        `yaml:"publicOrigin"`
 	MaxBodyBytes    int64         `yaml:"maxBodyBytes"`
 	ReadTimeout     time.Duration `yaml:"readTimeout"`
@@ -68,42 +84,101 @@ type ServerConfig struct {
 	HSTS            bool          `yaml:"hsts"`
 }
 
+type ServerTLSConfig struct {
+	CertFile string `yaml:"certFile"`
+	KeyFile  string `yaml:"keyFile"`
+}
+
+// IdentityConfig configures single sign-on. Every SSO source is optional:
+// when none is available, users sign in with their MongoDB credentials and
+// the RBAC policy applies to their MongoDB identity.
 type IdentityConfig struct {
+	// Mode is deprecated; use the per-source settings.
 	Mode string `yaml:"mode"`
-	// DeveloperGroups and SREGroups are OpenShift (or IdP) group names.
+	// RequireSSO refuses MongoDB logins without an SSO identity. With the
+	// default (false) MongoDB-only login stays available, which keeps the
+	// portal usable when OpenShift is unreachable.
+	RequireSSO bool `yaml:"requireSSO"`
+	// DeveloperGroups and SREGroups are deprecated shortcuts for the RBAC
+	// lines "g, <group>, role:readonly" and "g, <group>, role:admin".
 	DeveloperGroups []string `yaml:"developerGroups"`
 	SREGroups       []string `yaml:"sreGroups"`
 	// TrustedProxyCIDRs lists the source networks allowed to supply identity
-	// headers. Defaults to loopback only.
+	// headers (header source only). Defaults to loopback only.
 	TrustedProxyCIDRs []string `yaml:"trustedProxyCIDRs"`
-	// SSOLogoutURL, if set, is offered in the UI to end the SSO session.
+	// SSOLogoutURL, if set, is offered in the UI to end the SSO session at
+	// the identity provider.
 	SSOLogoutURL string          `yaml:"ssoLogoutURL"`
-	SSOLoginURL  string          `yaml:"ssoLoginURL"`
 	OpenShift    OpenShiftConfig `yaml:"openshift"`
 	Header       HeaderConfig    `yaml:"header"`
 	Dev          DevConfig       `yaml:"dev"`
 }
 
+// OpenShiftConfig configures the built-in OpenShift OAuth login, which works
+// like Argo CD's OpenShift connector: the portal's service account is the
+// OAuth client and group membership comes from the user's own token.
 type OpenShiftConfig struct {
-	APIURL             string        `yaml:"apiURL"`
-	CAFile             string        `yaml:"caFile"`
-	ServiceAccountFile string        `yaml:"serviceAccountTokenFile"`
-	UserHeader         string        `yaml:"userHeader"`
-	TokenHeader        string        `yaml:"tokenHeader"`
-	TokenCacheTTL      time.Duration `yaml:"tokenCacheTTL"`
-	GroupCacheTTL      time.Duration `yaml:"groupCacheTTL"`
-	GroupMaxStale      time.Duration `yaml:"groupMaxStale"`
+	// Enabled is "auto" (default), "true" or "false". "true" only changes
+	// logging: an unavailable OAuth server is reported as a warning.
+	Enabled string `yaml:"enabled"`
+	APIURL  string `yaml:"apiURL"`
+	// CAFile trusts the API server and, in OpenShift, the default ingress
+	// certificate of the OAuth server. ExtraCAFiles are optional (missing
+	// files are skipped); the system roots are always trusted.
+	CAFile       string   `yaml:"caFile"`
+	ExtraCAFiles []string `yaml:"extraCAFiles"`
+	// ServiceAccountTokenFile is the OAuth client secret; NamespaceFile and
+	// the token's subject give the client id
+	// system:serviceaccount:<namespace>:<name> unless ClientID is set.
+	ServiceAccountFile string   `yaml:"serviceAccountTokenFile"`
+	NamespaceFile      string   `yaml:"namespaceFile"`
+	ClientID           string   `yaml:"clientID"`
+	Scopes             []string `yaml:"scopes"`
+	// ProbeInterval is how often OAuth availability is re-checked while it
+	// is unavailable (healthy servers are re-checked 5x less often).
+	ProbeInterval time.Duration `yaml:"probeInterval"`
+	// RevalidateInterval re-checks a signed-in user's token and groups.
+	// MaxStale bounds how long a user stays signed in while the API server
+	// cannot be reached for revalidation.
+	RevalidateInterval time.Duration `yaml:"revalidateInterval"`
+	MaxStale           time.Duration `yaml:"maxStale"`
 	RequestTimeout     time.Duration `yaml:"requestTimeout"`
 }
 
 type HeaderConfig struct {
+	// Enabled accepts identity headers from a trusted authenticating proxy.
+	Enabled      bool   `yaml:"enabled"`
 	UserHeader   string `yaml:"userHeader"`
 	GroupsHeader string `yaml:"groupsHeader"`
 }
 
+// DevConfig is a fixed identity for local development only. It requires the
+// PORTAL_ALLOW_INSECURE_DEV_IDENTITY=true environment gate.
 type DevConfig struct {
-	User   string   `yaml:"user"`
-	Groups []string `yaml:"groups"`
+	Enabled bool     `yaml:"enabled"`
+	User    string   `yaml:"user"`
+	Groups  []string `yaml:"groups"`
+}
+
+// RBACConfig configures Argo CD-style portal RBAC (see package rbac).
+type RBACConfig struct {
+	// DefaultRole is granted to every signed-in user (SSO or MongoDB-only).
+	// Defaults to role:readonly; set "" to grant nothing by default.
+	DefaultRole *string `yaml:"defaultRole"`
+	// Policy is inline CSV (p and g lines).
+	Policy string `yaml:"policy"`
+	// PolicyDir optionally contains policy.csv and policy.default (an
+	// RBAC ConfigMap mount). It is re-read every ReloadInterval; a missing
+	// directory is ignored.
+	PolicyDir      string        `yaml:"policyDir"`
+	ReloadInterval time.Duration `yaml:"reloadInterval"`
+}
+
+// MonitoringConfig controls background health checks of the connection
+// profiles (unauthenticated "hello"/"ping"; no credentials are used).
+type MonitoringConfig struct {
+	// ProfileHealthInterval defaults to 30s; a negative value disables it.
+	ProfileHealthInterval time.Duration `yaml:"profileHealthInterval"`
 }
 
 type SessionConfig struct {
@@ -120,15 +195,19 @@ type SessionConfig struct {
 }
 
 type QueryConfig struct {
-	DefaultLimit           int64         `yaml:"defaultLimit"`
-	MaxLimit               int64         `yaml:"maxLimit"`
-	MaxSkip                int64         `yaml:"maxSkip"`
-	DefaultMaxTime         time.Duration `yaml:"defaultMaxTime"`
-	MaxMaxTime             time.Duration `yaml:"maxMaxTime"`
-	MaxResponseBytes       int           `yaml:"maxResponseBytes"`
-	MaxDocumentBytes       int64         `yaml:"maxDocumentBytes"`
-	MaxCount               int64         `yaml:"maxCount"`
-	AllowWriteStagesForSRE bool          `yaml:"allowWriteStagesForSRE"`
+	DefaultLimit     int64         `yaml:"defaultLimit"`
+	MaxLimit         int64         `yaml:"maxLimit"`
+	MaxSkip          int64         `yaml:"maxSkip"`
+	DefaultMaxTime   time.Duration `yaml:"defaultMaxTime"`
+	MaxMaxTime       time.Duration `yaml:"maxMaxTime"`
+	MaxResponseBytes int           `yaml:"maxResponseBytes"`
+	MaxDocumentBytes int64         `yaml:"maxDocumentBytes"`
+	MaxCount         int64         `yaml:"maxCount"`
+	// AllowWriteStages permits $out/$merge for users whose RBAC role may
+	// create documents in the source and target namespaces.
+	AllowWriteStages bool `yaml:"allowWriteStages"`
+	// Deprecated alias of AllowWriteStages.
+	AllowWriteStagesForSRE bool `yaml:"allowWriteStagesForSRE"`
 }
 
 type LoginConfig struct {
@@ -286,18 +365,44 @@ func (c *Config) applyDefaults() {
 	if len(id.TrustedProxyCIDRs) == 0 {
 		id.TrustedProxyCIDRs = []string{"127.0.0.1/32", "::1/128"}
 	}
+	// Deprecated identity.mode: map onto the source settings.
+	switch id.Mode {
+	case IdentityHeader:
+		id.Header.Enabled = true
+	case IdentityDev:
+		id.Dev.Enabled = true
+	}
 	o := &id.OpenShift
+	if id.Mode == IdentityHeader || id.Mode == IdentityDev {
+		setDefault(&o.Enabled, EnabledFalse)
+	}
+	setDefault(&o.Enabled, EnabledAuto)
+	o.Enabled = strings.ToLower(o.Enabled)
 	setDefault(&o.APIURL, "https://kubernetes.default.svc")
 	setDefault(&o.CAFile, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 	setDefault(&o.ServiceAccountFile, "/var/run/secrets/kubernetes.io/serviceaccount/token")
-	setDefault(&o.UserHeader, "X-Forwarded-User")
-	setDefault(&o.TokenHeader, "X-Forwarded-Access-Token")
-	setDuration(&o.TokenCacheTTL, time.Minute)
-	setDuration(&o.GroupCacheTTL, time.Minute)
-	setDuration(&o.GroupMaxStale, 5*time.Minute)
+	setDefault(&o.NamespaceFile, "/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if len(o.Scopes) == 0 {
+		o.Scopes = []string{"user:info"}
+	}
+	setDuration(&o.ProbeInterval, time.Minute)
+	setDuration(&o.RevalidateInterval, 5*time.Minute)
+	setDuration(&o.MaxStale, time.Hour)
 	setDuration(&o.RequestTimeout, 5*time.Second)
 	setDefault(&id.Header.UserHeader, "X-Forwarded-User")
 	setDefault(&id.Header.GroupsHeader, "X-Forwarded-Groups")
+
+	rb := &c.RBAC
+	if rb.DefaultRole == nil {
+		d := "role:readonly"
+		rb.DefaultRole = &d
+	}
+	setDefault(&rb.PolicyDir, "/etc/mongo-portal/rbac")
+	setDuration(&rb.ReloadInterval, 30*time.Second)
+	setDuration(&c.Monitoring.ProfileHealthInterval, 30*time.Second)
+	if c.Query.AllowWriteStagesForSRE {
+		c.Query.AllowWriteStages = true
+	}
 
 	ss := &c.Session
 	setDefault(&ss.CookieName, "__Host-mongo_portal_session")
@@ -381,45 +486,64 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if (c.Server.TLS.CertFile == "") != (c.Server.TLS.KeyFile == "") {
+		add("server.tls.certFile and server.tls.keyFile must be set together")
+	}
+
 	id := c.Identity
 	switch id.Mode {
-	case IdentityOpenShift:
-		if !hostIsLoopback(c.Server.ListenAddress) {
-			add("identity.mode=openshift requires server.listenAddress on loopback so only the OAuth proxy can reach it")
+	case "", IdentityOpenShift, IdentityHeader, IdentityDev:
+	default:
+		add("identity.mode (deprecated) must be one of %q, %q, %q", IdentityOpenShift, IdentityHeader, IdentityDev)
+	}
+	switch id.OpenShift.Enabled {
+	case EnabledAuto, EnabledTrue, EnabledFalse:
+	default:
+		add("identity.openshift.enabled must be auto, true or false")
+	}
+	if u, err := url.Parse(id.OpenShift.APIURL); err != nil || u.Scheme != "https" || u.Host == "" {
+		add("identity.openshift.apiURL must be an https URL")
+	}
+	for _, s := range id.OpenShift.Scopes {
+		if s == "" || strings.ContainsAny(s, " \t\r\n") {
+			add("identity.openshift.scopes contains an invalid scope %q", s)
 		}
-		if !validHeader(id.OpenShift.UserHeader) || !validHeader(id.OpenShift.TokenHeader) {
-			add("identity.openshift header names are invalid")
-		}
-		if u, err := url.Parse(id.OpenShift.APIURL); err != nil || u.Scheme != "https" {
-			add("identity.openshift.apiURL must be an https URL")
-		}
-	case IdentityHeader:
-		if !validHeader(id.Header.UserHeader) || !validHeader(id.Header.GroupsHeader) {
-			add("identity.header header names are invalid")
-		}
-	case IdentityDev:
+	}
+	if id.Header.Enabled && (!validHeader(id.Header.UserHeader) || !validHeader(id.Header.GroupsHeader)) {
+		add("identity.header header names are invalid")
+	}
+	if id.Dev.Enabled {
 		if os.Getenv(DevIdentityGateEnv) != "true" {
-			add("identity.mode=dev requires %s=true and must never be used in a cluster", DevIdentityGateEnv)
+			add("identity.dev requires %s=true and must never be used in a cluster", DevIdentityGateEnv)
 		}
 		if c.IsProduction() {
-			add("identity.mode=dev is not allowed when environment is production")
+			add("identity.dev is not allowed when environment is production")
 		}
 		if id.Dev.User == "" {
 			add("identity.dev.user is required")
 		}
-	default:
-		add("identity.mode must be one of %q, %q, %q", IdentityOpenShift, IdentityHeader, IdentityDev)
 	}
-	if len(id.DeveloperGroups) == 0 && len(id.SREGroups) == 0 {
-		add("identity.developerGroups or identity.sreGroups must list at least one group")
+	if id.Dev.Enabled && id.Header.Enabled {
+		add("identity.dev and identity.header cannot both be enabled")
+	}
+	if id.RequireSSO && !id.Dev.Enabled && !id.Header.Enabled && id.OpenShift.Enabled == EnabledFalse {
+		add("identity.requireSSO needs an SSO source (openshift, header or dev)")
 	}
 	for _, cidr := range id.TrustedProxyCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			add("identity.trustedProxyCIDRs: %v", err)
 		}
 	}
-	if !*c.Session.SecureCookie && id.Mode != IdentityDev {
-		add("session.secureCookie=false is only permitted with identity.mode=dev")
+	if !*c.Session.SecureCookie && !id.Dev.Enabled {
+		add("session.secureCookie=false is only permitted with the development identity")
+	}
+	for _, g := range append(slices.Clone(id.DeveloperGroups), id.SREGroups...) {
+		if g == "" || strings.ContainsAny(g, ",\r\n") {
+			add("identity group names must not be empty or contain commas: %q", g)
+		}
+	}
+	if d := *c.RBAC.DefaultRole; d != "" && !strings.HasPrefix(d, "role:") {
+		add("rbac.defaultRole must be empty or start with role:")
 	}
 	if strings.HasPrefix(c.Session.CookieName, "__Host-") && !*c.Session.SecureCookie {
 		add("session.cookieName with __Host- prefix requires secureCookie")
@@ -540,16 +664,17 @@ func (c *Config) Profile(name string) (*Profile, bool) {
 	return nil, false
 }
 
-func hostIsLoopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
+// LegacyRBACPolicy converts the deprecated identity.developerGroups and
+// identity.sreGroups settings into RBAC policy lines.
+func (c *Config) LegacyRBACPolicy() string {
+	var b strings.Builder
+	for _, g := range c.Identity.DeveloperGroups {
+		fmt.Fprintf(&b, "g, %s, role:readonly\n", g)
 	}
-	if host == "localhost" {
-		return true
+	for _, g := range c.Identity.SREGroups {
+		fmt.Fprintf(&b, "g, %s, role:admin\n", g)
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return b.String()
 }
 
 func validHeader(h string) bool { return headerNameRe.MatchString(h) }

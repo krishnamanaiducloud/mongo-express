@@ -95,3 +95,38 @@ th:hover .column-drag-handle {
   overflow-y: auto;
   max-height: 90vh;
 }
+
+/* Sign-in page and user menu */
+.signin-card {
+  border-radius: 0.75rem;
+}
+
+.signin-openshift {
+  background-color: #ee0000;
+  border-color: #ee0000;
+}
+
+.signin-openshift:hover,
+.signin-openshift:focus {
+  background-color: #a30000;
+  border-color: #a30000;
+}
+
+.signin-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--bs-secondary-color, #6c757d);
+  font-size: 0.875rem;
+}
+
+.signin-divider::before,
+.signin-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--bs-border-color, #dee2e6);
+}
+
+.user-menu .dropdown-menu {
+  min-width: 14rem;
+}

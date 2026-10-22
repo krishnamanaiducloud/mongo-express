@@ -23,19 +23,23 @@ import (
 var (
 	ErrNotFound   = errors.New("session not found")
 	ErrExpired    = errors.New("session expired")
-	ErrWrongOwner = errors.New("session belongs to a different SSO identity")
+	ErrWrongOwner = errors.New("session belongs to a different identity")
 	ErrCapacity   = errors.New("session capacity reached")
 )
 
-// Session is an authenticated MongoDB session bound to one SSO identity.
+// Session is an authenticated MongoDB session bound to one principal: an SSO
+// user, or the MongoDB user itself when signed in without SSO.
 type Session struct {
 	// Handle is a non-secret identifier used to refer to the session in the
 	// API (for example to terminate it). The bearer secret is never exposed
 	// after it is set as a cookie.
-	Handle     string
-	CSRFToken  string
-	SSOUser    string
-	PortalRole identity.Role
+	Handle    string
+	CSRFToken string
+	// Owner is identity.Principal.Key() of the principal that signed in.
+	Owner string
+	// Principal is the principal at sign-in; for MongoDB-only sessions it is
+	// the identity used for RBAC on every request.
+	Principal  *identity.Principal
 	Profile    string
 	MongoUser  string
 	AuthSource string
@@ -231,7 +235,7 @@ func (st *Store) Create(sess *Session, replaceSecret string) (string, error) {
 	st.mu.Lock()
 	var mine []*Session
 	for _, s := range st.sessions {
-		if s.SSOUser == sess.SSOUser {
+		if s.Owner == sess.Owner {
 			mine = append(mine, s)
 		}
 	}
@@ -254,9 +258,9 @@ func (st *Store) Create(sess *Session, replaceSecret string) (string, error) {
 	return secret, nil
 }
 
-// Get returns the session for secret if it is valid and owned by ssoUser,
+// Get returns the session for secret if it is valid and owned by owner,
 // and records activity.
-func (st *Store) Get(secret, ssoUser string) (*Session, error) {
+func (st *Store) Get(secret, owner string) (*Session, error) {
 	if secret == "" {
 		return nil, ErrNotFound
 	}
@@ -274,8 +278,8 @@ func (st *Store) Get(secret, ssoUser string) (*Session, error) {
 		st.closeAll([]*Session{sess}, "expired")
 		return nil, ErrExpired
 	}
-	if sess.SSOUser != ssoUser {
-		// Cookie presented under a different SSO identity: never serve it,
+	if sess.Owner != owner {
+		// Cookie presented under a different identity: never serve it,
 		// and destroy it because the bearer secret has leaked across users.
 		delete(st.sessions, k)
 		st.mu.Unlock()
@@ -287,6 +291,22 @@ func (st *Store) Get(secret, ssoUser string) (*Session, error) {
 	sess.lastSeen = now
 	sess.mu.Unlock()
 	return sess, nil
+}
+
+// OwnerOf returns the owner key and principal of the live session for
+// secret, or "" when there is none. It records no activity; callers then
+// use Get with the owner they expect.
+func (st *Store) OwnerOf(secret string) (string, *identity.Principal) {
+	if secret == "" {
+		return "", nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.sessions[keyOf(secret)]
+	if !ok || st.expired(sess, st.now()) {
+		return "", nil
+	}
+	return sess.Owner, sess.Principal
 }
 
 // Delete removes the session identified by secret.
@@ -305,12 +325,12 @@ func (st *Store) Delete(secret, reason string) bool {
 	return ok
 }
 
-// DeleteByHandle removes a session of ssoUser by its public handle.
-func (st *Store) DeleteByHandle(ssoUser, handle, reason string) bool {
+// DeleteByHandle removes a session of owner by its public handle.
+func (st *Store) DeleteByHandle(owner, handle, reason string) bool {
 	st.mu.Lock()
 	var found *Session
 	for k, s := range st.sessions {
-		if s.SSOUser == ssoUser && s.Handle == handle {
+		if s.Owner == owner && s.Handle == handle {
 			found = s
 			delete(st.sessions, k)
 			break
@@ -323,14 +343,14 @@ func (st *Store) DeleteByHandle(ssoUser, handle, reason string) bool {
 	return found != nil
 }
 
-// ListByUser returns the live sessions of an SSO user.
-func (st *Store) ListByUser(ssoUser string) []*Session {
+// ListByOwner returns the live sessions of a principal.
+func (st *Store) ListByOwner(owner string) []*Session {
 	now := st.now()
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var out []*Session
 	for _, s := range st.sessions {
-		if s.SSOUser == ssoUser && !st.expired(s, now) {
+		if s.Owner == owner && !st.expired(s, now) {
 			out = append(out, s)
 		}
 	}

@@ -55,7 +55,7 @@ EOF
 
 for variant in production debug; do
   img="$PROD"; [ "$variant" = debug ] && img="$DEBUG"
-  # Same pod/container security settings as deploy/base/deployment.yaml; the
+  # Same pod/container security settings as examples/openshift/mongo-portal/base/deployment.yaml; the
   # explicit runAsUser/runAsGroup emulate what OpenShift injects.
   kubectl -n portal apply -f - <<EOF
 apiVersion: v1

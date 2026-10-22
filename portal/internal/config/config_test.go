@@ -40,8 +40,13 @@ func TestRejectsUnsafeConfig(t *testing.T) {
 		"tls option in uri":        strings.Replace(valid, "replicaSet=rs0", "replicaSet=rs0&tls=true", 1),
 		"verification disabled":    strings.Replace(valid, "mode: disabled", "mode: enabled\n      verifyServerCertificate: false", 1),
 		"unknown field":            valid + "\nbogus: 1\n",
-		"no groups":                strings.Replace(strings.Replace(valid, "developerGroups: [devs]", "", 1), "sreGroups: [sres]", "", 1),
 		"bad identity mode":        strings.Replace(valid, "mode: header", "mode: none", 1),
+		"bad openshift enabled":    strings.Replace(valid, "mode: header", "openshift:\n    enabled: sometimes", 1),
+		"http api url":             strings.Replace(valid, "mode: header", "openshift:\n    apiURL: http://kubernetes", 1),
+		"group with comma":         strings.Replace(valid, "[devs]", "[\"a,b\"]", 1),
+		"bad default role":         valid + "rbac:\n  defaultRole: readonly\n",
+		"tls cert without key":     valid + "server:\n  tls:\n    certFile: /tls.crt\n",
+		"require sso without src":  strings.Replace(valid, "mode: header", "requireSSO: true\n  openshift:\n    enabled: \"false\"", 1),
 		"plaintext in production":  strings.Replace(valid, "environment: test", "environment: production", 1),
 		"cert files with disabled": strings.Replace(valid, "mode: disabled", "mode: disabled\n      caFile: /ca.pem", 1),
 		"bad mechanism":            strings.Replace(valid, "tls:", "authMechanisms: [PLAIN]\n    tls:", 1),
@@ -63,10 +68,32 @@ func TestProductionPlaintextRequiresApproval(t *testing.T) {
 	}
 }
 
-func TestOpenShiftModeRequiresLoopback(t *testing.T) {
-	raw := strings.Replace(valid, "mode: header", "mode: openshift", 1) + "server:\n  listenAddress: 0.0.0.0:8080\n"
-	if _, err := Parse([]byte(raw)); err == nil {
-		t.Fatal("openshift mode with non-loopback listener must be rejected")
+func TestIdentityDefaultsArePassive(t *testing.T) {
+	c, err := Parse([]byte("profiles:\n  - name: p\n    uri: mongodb://a/\n    tls: {mode: disabled}\n"))
+	if err != nil {
+		t.Fatalf("a configuration without any SSO settings must be valid: %v", err)
+	}
+	if c.Identity.OpenShift.Enabled != EnabledAuto || c.Identity.RequireSSO || c.Identity.Header.Enabled {
+		t.Fatalf("identity defaults: %+v", c.Identity)
+	}
+	if *c.RBAC.DefaultRole != "role:readonly" || c.RBAC.PolicyDir == "" {
+		t.Fatalf("rbac defaults: %+v", c.RBAC)
+	}
+	// Deprecated mode: header maps onto the header source and disables auto OpenShift.
+	c, err = Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Identity.Header.Enabled || c.Identity.OpenShift.Enabled != EnabledFalse {
+		t.Fatalf("legacy mode mapping: %+v", c.Identity)
+	}
+	if got := c.LegacyRBACPolicy(); got != "g, devs, role:readonly\ng, sres, role:admin\n" {
+		t.Fatalf("legacy policy: %q", got)
+	}
+	// An explicit default role of "" grants nothing.
+	c, err = Parse([]byte(valid + "rbac:\n  defaultRole: \"\"\n"))
+	if err != nil || *c.RBAC.DefaultRole != "" {
+		t.Fatalf("empty default role: %v %v", err, c)
 	}
 }
 
@@ -89,15 +116,16 @@ func TestCommittedConfigs(t *testing.T) {
 	if _, err := Load("../../config/dev.example.yaml"); err != nil {
 		t.Errorf("dev.example.yaml: %v", err)
 	}
+	const dir = "../../../examples/openshift/mongo-portal/"
 	for _, env := range []string{"dev", "test"} {
-		if _, err := Load("../../../deploy/overlays/" + env + "/config.yaml"); err != nil {
+		if _, err := Load(dir + "overlays/" + env + "/config.yaml"); err != nil {
 			t.Errorf("overlay %s: %v", env, err)
 		}
 	}
-	if _, err := Load("../../../deploy/base/config.yaml"); err != nil {
+	if _, err := Load(dir + "base/config.yaml"); err != nil {
 		t.Errorf("base: %v", err)
 	}
-	_, err := Load("../../../deploy/overlays/prod/config.yaml")
+	_, err := Load(dir + "overlays/prod/config.yaml")
 	if err == nil || !strings.Contains(err.Error(), "plaintextApproved") {
 		t.Errorf("prod overlay must require an explicit plaintext decision, got %v", err)
 	}

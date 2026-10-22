@@ -1,5 +1,6 @@
-// Theme preference (light/dark) is a non-sensitive UI preference and is the
-// only value the portal keeps in browser storage.
+// Theme preference (light/dark) is a non-sensitive UI preference kept in
+// browser storage, like the recent namespaces and last profile (lib/recent).
+// Credentials, tokens and documents are never stored in the browser.
 export type Theme = 'light' | 'dark';
 
 const KEY = 'mongo-portal-theme';

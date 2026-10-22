@@ -1,0 +1,23 @@
+{% extends 'layout.html' %}
+
+{% block title %}Access denied{% endblock %}
+
+{% block content %}
+<div class="card border-warning mt-3">
+  <div class="card-body">
+    <h4 class="card-title"><i class="fa fa-ban text-warning me-2" aria-hidden="true"></i>Not permitted</h4>
+    <p class="card-text">
+      Your role does not allow <code>{{ what }}</code>.
+    </p>
+    <p class="card-text text-muted small mb-0">
+      Signed in as <strong>{{ user.name }}</strong>
+      {% if user.source == 'openshift' %}(OpenShift){% elif user.source == 'local' %}(local account){% elif user.source == 'oidc' %}(OpenID Connect){% endif %}
+      · roles: {% if roles.length %}{% for r in roles %}<span class="badge bg-secondary me-1">{{ r }}</span>{% endfor %}{% else %}none{% endif %}.
+      Ask an administrator to map your user or group in the RBAC policy.
+    </p>
+  </div>
+  <div class="card-footer bg-transparent">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ baseHref }}">Back to databases</a>
+  </div>
+</div>
+{% endblock %}

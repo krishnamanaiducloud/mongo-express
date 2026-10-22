@@ -20,14 +20,14 @@ import {
   ToolbarItem,
 } from '@patternfly/react-core';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
-import { useCreateCollection, useDatabases, useSession } from '../api/hooks';
+import { useCreateCollection, useDatabases } from '../api/hooks';
+import type { Me } from '../api/types';
 import { errorMessage } from '../api/client';
 import { formatBytes } from '../lib/ejson';
 import { ErrorState } from './StatusPages';
 
-export function DatabasesPage() {
+export function DatabasesPage({ me }: { me: Me }) {
   const dbs = useDatabases();
-  const session = useSession();
   const [filter, setFilter] = useState('');
   const [creating, setCreating] = useState(false);
   const list = (dbs.data?.databases ?? []).filter((d) => d.name.toLowerCase().includes(filter.toLowerCase()));
@@ -45,7 +45,7 @@ export function DatabasesPage() {
           <ToolbarItem>
             <SearchInput aria-label="Filter databases" placeholder="Filter databases" value={filter} onChange={(_e, v) => setFilter(v)} onClear={() => setFilter('')} />
           </ToolbarItem>
-          {session.data?.canWrite && (
+          {me.permissions['collections:create'] && (
             <ToolbarItem>
               <Button variant="secondary" onClick={() => setCreating(true)}>
                 Create database

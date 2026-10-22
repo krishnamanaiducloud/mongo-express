@@ -1,15 +1,50 @@
-export type Role = 'developer' | 'sre';
+/** How the current user signed in. "" means anonymous (no SSO, no MongoDB session). */
+export type IdentitySource = '' | 'openshift' | 'header' | 'dev' | 'mongodb';
+
+export interface OpenShiftStatus {
+  state: 'available' | 'unavailable' | 'disabled';
+  reason?: string;
+  checkedAt?: string;
+  issuer?: string;
+}
+
+/** Sign-in methods available right now. SSO sources are optional and passive. */
+export interface AuthOptions {
+  openshift: OpenShiftStatus;
+  openshiftURL: string;
+  header: boolean;
+  dev: boolean;
+  requireSSO: boolean;
+  mongodbLogin: boolean;
+}
+
+/** UI permission hints keyed "resource:action" (and "audit:all"). */
+export type GlobalPermissions = Record<string, boolean>;
 
 export interface Me {
+  authenticated: boolean;
   user: string;
+  source: IdentitySource;
+  sso: boolean;
   groups: string[];
-  role: Role;
-  canWrite: boolean;
+  roles: string[];
+  permissions: GlobalPermissions;
   csrfToken: string;
   hasSession: boolean;
   ssoLogoutURL: string;
   environment: string;
   build: { version: string; commit: string };
+  auth: AuthOptions;
+}
+
+export type HealthState = 'unknown' | 'online' | 'degraded' | 'offline' | 'misconfigured' | 'disabled';
+
+export interface ProfileHealth {
+  state: HealthState;
+  reason?: string;
+  latencyMs?: number;
+  setName?: string;
+  checkedAt?: string;
 }
 
 export interface Profile {
@@ -22,11 +57,18 @@ export interface Profile {
   clientCertificate: boolean;
   plaintextWarning: boolean;
   replicaSet?: string;
+  health?: ProfileHealth;
 }
 
 export interface RoleRef {
   role: string;
   db: string;
+}
+
+export interface Principal {
+  user: string;
+  groups: string[] | null;
+  source: IdentitySource;
 }
 
 export interface SessionInfo {
@@ -37,8 +79,9 @@ export interface SessionInfo {
   authSource: string;
   mechanism: string;
   tls: boolean;
-  portalRole: Role;
-  canWrite: boolean;
+  identity: Principal | null;
+  portalRoles: string[] | null;
+  permissions: GlobalPermissions;
   mongoRoles: RoleRef[] | null;
   createdAt: string;
   expiresAt: string;
@@ -62,8 +105,23 @@ export interface Capabilities {
   collStats: boolean;
 }
 
+/** Portal RBAC decisions for one namespace. */
+export interface PortalAccess {
+  find: boolean;
+  insert: boolean;
+  update: boolean;
+  remove: boolean;
+  createIndex: boolean;
+  dropIndex: boolean;
+  createCollection: boolean;
+  dropCollection: boolean;
+  dropDatabase: boolean;
+}
+
 export interface Access {
+  /** Any document write allowed by RBAC (legacy summary). */
   portalWrite: boolean;
+  portal?: PortalAccess;
   mongo: Capabilities;
 }
 
@@ -117,6 +175,7 @@ export interface AuditEvent {
   time: string;
   requestId?: string;
   ssoUser: string;
+  identity?: IdentitySource;
   portalRole?: string;
   mongoUser?: string;
   profile?: string;
@@ -143,4 +202,41 @@ export interface QueryResponse {
   page?: DocPage;
   count?: number;
   countCapped?: boolean;
+}
+
+export interface PolicyStatus {
+  source: 'file' | 'config' | 'built-in';
+  defaultRole: string;
+  loadedAt: string;
+  error?: string;
+}
+
+export interface RbacRule {
+  role: string;
+  resource: string;
+  action: string;
+  object: string;
+  effect: 'allow' | 'deny';
+}
+
+export interface PermissionsInfo {
+  user: string;
+  source: IdentitySource;
+  subjects: string[];
+  roles: string[];
+  directRoles: string[];
+  defaultRole: string;
+  rules: RbacRule[];
+  policy: PolicyStatus;
+  check?: { resource: string; action: string; object: string; allowed: boolean };
+}
+
+export interface StatusInfo {
+  auth: AuthOptions;
+  profiles: { name: string; displayName: string; health: ProfileHealth }[];
+  build: { version: string; commit: string };
+  rbac?: PolicyStatus;
+  tracing?: boolean;
+  shell?: boolean;
+  sessions?: { active: number; max: number };
 }

@@ -5,20 +5,50 @@
 {% block content %}
 <div class="container mt-5">
   <div class="row justify-content-center">
-    <div class="col-md-5">
-      <div class="card">
-        <div class="card-body">
-          <h3 class="card-title text-center mb-4">Sign in</h3>
+    <div class="col-md-6 col-lg-5">
+      <div class="card shadow-sm signin-card">
+        <div class="card-body p-4">
+          <h3 class="card-title text-center mb-4">Sign in to Mongo Express</h3>
 
+          {% if signedOut %}
+          <div class="alert alert-info" role="status">You have signed out.</div>
+          {% endif %}
+          {% if ssoMessage %}
+          <div class="alert alert-warning" role="status">
+            {{ ssoMessage }}{% if localLogin %} You can sign in with the local account instead.{% endif %}
+          </div>
+          {% endif %}
+          {% if messageError %}
+          <div class="alert alert-danger" role="alert">{{ messageError }}</div>
+          {% endif %}
+
+          {% if openshiftAvailable %}
+          <div class="d-grid">
+            <a class="btn btn-lg btn-danger signin-openshift" href="{{ openshiftUrl }}">
+              <i class="fab fa-redhat me-2" aria-hidden="true"></i>Log in with OpenShift
+            </a>
+          </div>
+          <p class="text-muted small text-center mt-2 mb-0">Your OpenShift groups decide what you can do here.</p>
+          {% if localLogin %}
+          <div class="signin-divider my-4"><span>or use the local account</span></div>
+          {% endif %}
+          {% elif openshift.state == 'unavailable' %}
+          <p class="text-muted small mb-3">
+            <i class="fa fa-info-circle" aria-hidden="true"></i>
+            OpenShift sign-in is not available right now{% if localLogin %}; use the local account{% endif %}.
+          </p>
+          {% endif %}
+
+          {% if localLogin %}
           {# A real form, rather than the browser's basic-auth prompt, so password managers
-             can store and fill these credentials. That is the whole point of #1733. #}
+             can store and fill these credentials. #}
           <form method="POST" action="{{ loginUrl }}" autocomplete="on">
             <input type="hidden" name="_csrf" value="{{ csrfToken }}">
 
             <div class="mb-3">
               <label for="username" class="form-label">Username</label>
               <input type="text" id="username" name="username" class="form-control"
-                autocomplete="username" autofocus required>
+                autocomplete="username" {% if !openshiftAvailable %}autofocus{% endif %} required>
             </div>
 
             <div class="mb-3">
@@ -28,9 +58,15 @@
             </div>
 
             <div class="d-grid">
-              <button type="submit" class="btn btn-primary">Sign in</button>
+              <button type="submit" class="btn {% if openshiftAvailable %}btn-outline-secondary{% else %}btn-primary{% endif %}">Sign in</button>
             </div>
           </form>
+          {% elif !openshiftAvailable %}
+          <div class="alert alert-info mb-0" role="status">
+            Sign-in is only possible with OpenShift, which is not available right now. This page checks again automatically;
+            <a href="{{ loginUrl }}">reload</a> in a moment.
+          </div>
+          {% endif %}
         </div>
       </div>
     </div>

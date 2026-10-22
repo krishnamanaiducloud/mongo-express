@@ -36,9 +36,13 @@ server:
   listenAddress: 127.0.0.1:8080
   opsListenAddress: 0.0.0.0:9090
 identity:
-  mode: header
-  developerGroups: [devs]
-  sreGroups: [sres]
+  header:
+    enabled: true
+  openshift:
+    enabled: "false"
+rbac:
+  policy: |
+    g, sres, role:admin
 profiles:
   - name: local
     uri: mongodb://mongo:27017/
@@ -77,7 +81,9 @@ run_case() { # image label uid
   local me; me="$(curl_in "$c" -s "${H[@]}" http://127.0.0.1:8080/api/v1/me)"
   local tok; tok="$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' <<<"$me")"
   [ -n "$tok" ] && ok "SSO identity accepted" || { bad "me: $me"; return; }
-  [ "$(curl_in "$c" -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/me)" = 401 ] && ok "no identity -> 401" || bad "no identity"
+  # Without SSO the portal still answers and offers MongoDB login.
+  local anon; anon="$(curl_in "$c" -s http://127.0.0.1:8080/api/v1/me)"
+  grep -q '"authenticated":false' <<<"$anon" && grep -q '"mongodbLogin":true' <<<"$anon" && ok "anonymous -> sign-in options (no error)" || bad "anonymous me: $anon"
 
   local login; login="$(curl_in "$c" -s -c /tmp/jar -D - "${H[@]}" -H 'Content-Type: application/json' -H "X-CSRF-Token: $tok" \
     -d "{\"profile\":\"local\",\"username\":\"smoke\",\"password\":\"$PW\"}" http://127.0.0.1:8080/api/v1/session)"
@@ -91,6 +97,46 @@ run_case() { # image label uid
   docker logs "$c" 2>&1 | grep -q "$PW" && bad "password found in logs" || ok "password not in logs"
   docker rm -f "$c" >/dev/null
 }
+
+# HTTPS serving (as in OpenShift with the service CA certificate).
+tls_case() {
+  local c="smoke-tls-$$"
+  echo "== production with TLS listener"
+  # Throwaway self-signed certificate, written into the work directory.
+  docker run --rm --label "portal-smoke=$$" --user 0 -v "$WORK:/w" --entrypoint sh "$DEBUG" -c \
+    'openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 -keyout /w/tls.key -out /w/tls.crt && chmod 0644 /w/tls.key /w/tls.crt' \
+    >/dev/null 2>&1 || { bad "could not create the test certificate"; return; }
+  cat > "$WORK/config-tls.yaml" <<'YAML'
+environment: smoke
+server:
+  listenAddress: 127.0.0.1:8443
+  opsListenAddress: 0.0.0.0:9090
+  tls:
+    certFile: /certs/tls.crt
+    keyFile: /certs/tls.key
+identity:
+  openshift:
+    enabled: "false"
+profiles:
+  - name: local
+    uri: mongodb://mongo:27017/
+    tls:
+      mode: disabled
+YAML
+  chmod 0644 "$WORK/config-tls.yaml"
+  docker run -d --label "portal-smoke=$$" --name "$c" --network "$NET" --user 1000680000:0 --read-only --tmpfs /tmp:rw,size=16m \
+    --cap-drop ALL --security-opt no-new-privileges -v "$WORK/config-tls.yaml:/etc/mongo-portal/config.yaml:ro" \
+    -v "$WORK/tls.crt:/certs/tls.crt:ro" -v "$WORK/tls.key:/certs/tls.key:ro" "$PROD" >/dev/null
+  local code=""
+  for _ in $(seq 1 30); do
+    code="$(docker run --rm --label "portal-smoke=$$" --network "container:$c" -v "$WORK/tls.crt:/ca.crt:ro" --entrypoint curl "$DEBUG" \
+      -s -o /dev/null -w '%{http_code}' --cacert /ca.crt https://127.0.0.1:8443/api/v1/me 2>/dev/null || true)"
+    [ "$code" = 200 ] && break; sleep 1
+  done
+  [ "$code" = 200 ] && ok "HTTPS listener with verified certificate" || { bad "HTTPS listener: $code"; docker logs "$c" 2>&1 | tail -5; }
+  docker rm -f "$c" >/dev/null
+}
+tls_case
 
 for uid in 1000680000 123456 65532; do
   run_case "$PROD" production "$uid"

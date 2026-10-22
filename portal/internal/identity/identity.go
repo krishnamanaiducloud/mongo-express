@@ -1,5 +1,17 @@
-// Package identity resolves the SSO identity of a request and maps it to a
-// portal role. Identity is only accepted from a trusted reverse proxy.
+// Package identity resolves who is using the portal.
+//
+// Identity is optional and comes from one of several sources:
+//
+//   - OpenShift: the portal's built-in OAuth login (like Argo CD's OpenShift
+//     connector); the signed-in user is carried in an encrypted cookie.
+//   - Header: a trusted authenticating reverse proxy sets user and group
+//     headers (for example oauth2-proxy).
+//   - Dev: a fixed identity for local development behind an explicit gate.
+//   - MongoDB: no SSO; the user is known by the MongoDB credentials they
+//     signed in with. These principals are created at MongoDB login.
+//
+// A request without an SSO identity is anonymous, which is not an error: the
+// portal stays usable through MongoDB login whenever SSO is unavailable.
 package identity
 
 import (
@@ -13,124 +25,98 @@ import (
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/config"
 )
 
-// Role is the portal-level authorization tier. It caps what the portal will
-// attempt; MongoDB remains the final authority for every operation.
-type Role string
+// Source identifies how a principal authenticated.
+type Source string
 
 const (
-	RoleNone      Role = ""
-	RoleDeveloper Role = "developer"
-	RoleSRE       Role = "sre"
+	SourceOpenShift Source = "openshift"
+	SourceHeader    Source = "header"
+	SourceDev       Source = "dev"
+	SourceMongoDB   Source = "mongodb"
 )
 
-// CanWrite reports whether the portal role permits data-modifying requests.
-func (r Role) CanWrite() bool { return r == RoleSRE }
-
-// Identity is an authenticated SSO principal.
-type Identity struct {
+// Principal is an authenticated user.
+type Principal struct {
 	User   string   `json:"user"`
 	Groups []string `json:"groups"`
-	Role   Role     `json:"role"`
+	Source Source   `json:"source"`
+}
+
+// SSO reports whether the principal came from a single sign-on source.
+func (p *Principal) SSO() bool { return p != nil && p.Source != SourceMongoDB }
+
+// Key identifies the principal for session ownership. It is qualified by
+// source so a MongoDB-only session can never be used by an SSO user of the
+// same name, or the other way round.
+func (p *Principal) Key() string {
+	if p.Source == SourceMongoDB {
+		return "mongodb:" + p.User
+	}
+	return "sso:" + p.User
+}
+
+// Subjects lists the RBAC subjects of the principal. SSO users and groups
+// match both bare names (Argo CD style) and qualified "user:"/"group:"
+// names. MongoDB-only principals match "mongodb:<user>@<authSource>" and
+// "mongodb:<user>".
+func (p *Principal) Subjects() []string {
+	if p == nil {
+		return nil
+	}
+	if p.Source == SourceMongoDB {
+		out := []string{"mongodb:" + p.User}
+		if user, _, ok := strings.Cut(p.User, "@"); ok {
+			out = append(out, "mongodb:"+user)
+		}
+		return out
+	}
+	out := []string{p.User, "user:" + p.User}
+	for _, g := range p.Groups {
+		out = append(out, g, "group:"+g)
+	}
+	return out
 }
 
 var (
-	// ErrUnauthenticated means no valid SSO identity was presented.
-	ErrUnauthenticated = errors.New("sso identity required")
-	// ErrUntrustedProxy means identity headers arrived from an untrusted peer.
-	ErrUntrustedProxy = errors.New("identity headers from untrusted source")
-	// ErrNotAuthorized means the user is authenticated but in no portal group.
-	ErrNotAuthorized = errors.New("user is not a member of an authorized group")
-	// ErrUnavailable means identity could not be verified (fail closed).
+	// ErrUnauthenticated means credentials were presented but are invalid.
+	ErrUnauthenticated = errors.New("not authenticated")
+	// ErrUnavailable means identity could not be verified right now.
 	ErrUnavailable = errors.New("identity verification unavailable")
 )
 
-// Resolver authenticates a request.
-type Resolver interface {
-	Resolve(r *http.Request) (*Identity, error)
+// MongoDBPrincipal returns the principal for a MongoDB-only login.
+func MongoDBPrincipal(user, authSource string) *Principal {
+	return &Principal{User: user + "@" + authSource, Source: SourceMongoDB}
 }
 
-// RoleMapper maps group membership to a portal role.
-type RoleMapper struct {
-	DeveloperGroups []string
-	SREGroups       []string
-}
-
-// RoleFor returns the highest portal role granted by groups.
-func (m RoleMapper) RoleFor(groups []string) Role {
-	for _, g := range groups {
-		if slices.Contains(m.SREGroups, g) {
-			return RoleSRE
-		}
-	}
-	for _, g := range groups {
-		if slices.Contains(m.DeveloperGroups, g) {
-			return RoleDeveloper
-		}
-	}
-	return RoleNone
-}
-
-// New builds the resolver selected by configuration.
-func New(cfg config.IdentityConfig) (Resolver, error) {
-	trusted, err := parseCIDRs(cfg.TrustedProxyCIDRs)
-	if err != nil {
-		return nil, err
-	}
-	mapper := RoleMapper{DeveloperGroups: cfg.DeveloperGroups, SREGroups: cfg.SREGroups}
-	switch cfg.Mode {
-	case config.IdentityOpenShift:
-		return NewOpenShift(cfg.OpenShift, mapper, trusted)
-	case config.IdentityHeader:
-		return &headerResolver{cfg: cfg.Header, mapper: mapper, trusted: trusted}, nil
-	case config.IdentityDev:
-		return &devResolver{id: Identity{User: cfg.Dev.User, Groups: cfg.Dev.Groups, Role: mapper.RoleFor(cfg.Dev.Groups)}}, nil
-	}
-	return nil, errors.New("unknown identity mode")
-}
-
-// headerResolver trusts user and group headers set by a generic
-// authenticating proxy (for example oauth2-proxy). Group membership is
-// asserted by the proxy, so the proxy must be the only network path.
-type headerResolver struct {
+// headerSource trusts user and group headers set by a generic
+// authenticating proxy. Group membership is asserted by the proxy, so the
+// proxy must be the only network path to the portal.
+type headerSource struct {
 	cfg     config.HeaderConfig
-	mapper  RoleMapper
 	trusted []*net.IPNet
 }
 
-func (h *headerResolver) Resolve(r *http.Request) (*Identity, error) {
+// resolve returns nil without error when no identity header is present or
+// the peer is not trusted (the headers are then ignored).
+func (h *headerSource) resolve(r *http.Request) (*Principal, bool) {
 	user := r.Header.Get(h.cfg.UserHeader)
 	if user == "" {
-		return nil, ErrUnauthenticated
+		return nil, false
 	}
 	if !peerTrusted(r, h.trusted) {
-		return nil, ErrUntrustedProxy
+		return nil, true
 	}
 	if !ValidUsername(user) {
-		return nil, ErrUnauthenticated
+		return nil, true
 	}
 	var groups []string
 	for _, g := range strings.Split(r.Header.Get(h.cfg.GroupsHeader), ",") {
-		if g = strings.TrimSpace(g); g != "" {
+		if g = strings.TrimSpace(g); g != "" && ValidUsername(g) && !slices.Contains(groups, g) {
 			groups = append(groups, g)
 		}
 	}
-	id := &Identity{User: user, Groups: groups, Role: h.mapper.RoleFor(groups)}
-	if id.Role == RoleNone {
-		return id, ErrNotAuthorized
-	}
-	return id, nil
-}
-
-// devResolver returns a fixed identity. Only enabled behind an explicit
-// environment gate for local development.
-type devResolver struct{ id Identity }
-
-func (d *devResolver) Resolve(*http.Request) (*Identity, error) {
-	id := d.id
-	if id.Role == RoleNone {
-		return &id, ErrNotAuthorized
-	}
-	return &id, nil
+	return &Principal{User: user, Groups: groups, Source: SourceHeader}, false
 }
 
 // ValidUsername rejects empty, oversized or control-character identities.

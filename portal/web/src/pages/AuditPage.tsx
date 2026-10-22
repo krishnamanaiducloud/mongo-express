@@ -16,7 +16,7 @@ export function AuditPage({ me }: { me: Me }) {
         Audit activity
       </Title>
       {audit.data?.note && <Alert variant="info" isInline isPlain title={audit.data.note} className="pf-v6-u-mb-md" />}
-      {me.role === 'sre' && (
+      {me.permissions['audit:all'] && (
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
@@ -32,7 +32,7 @@ export function AuditPage({ me }: { me: Me }) {
           <Thead>
             <Tr>
               <Th>Time</Th>
-              <Th>SSO user</Th>
+              <Th>User</Th>
               <Th>MongoDB user</Th>
               <Th>Action</Th>
               <Th>Namespace</Th>
@@ -43,7 +43,10 @@ export function AuditPage({ me }: { me: Me }) {
             {audit.data.events.map((e, i) => (
               <Tr key={`${e.time}-${i}`}>
                 <Td dataLabel="Time">{new Date(e.time).toLocaleString()}</Td>
-                <Td dataLabel="SSO user">{e.ssoUser}</Td>
+                <Td dataLabel="User">
+                  {e.ssoUser}
+                  {e.identity && e.identity !== 'mongodb' && <span className="pf-v6-u-font-size-sm"> ({e.identity})</span>}
+                </Td>
                 <Td dataLabel="MongoDB user">{e.mongoUser}</Td>
                 <Td dataLabel="Action" className="portal-mono">{e.action}</Td>
                 <Td dataLabel="Namespace">

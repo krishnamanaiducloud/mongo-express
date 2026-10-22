@@ -1,0 +1,32 @@
+# mongo-express RBAC policy, in the format of Argo CD's argocd-rbac-cm:
+#
+#   p, <role>, <resource>, <action>, <object>[, allow|deny]
+#   g, <subject>, <role>
+#
+# Resources/actions: databases (get, create, delete), collections (get,
+# create, update, delete), documents (get, create, update, delete), indexes
+# (get, create, delete), gridfs (get, create, delete), server (get, update:
+# the connection form shown when MongoDB is unreachable). Objects are globs
+# over "<db>" or "<db>/<collection>". Built-in roles: role:readonly,
+# role:editor, role:admin.
+#
+# Subjects: OpenShift user or group names (as in Argo CD), or
+# "local:<username>" for the local account (basic-auth credentials), which
+# signs in when OpenShift login is unavailable and gets ME_CONFIG_RBAC_LOCAL_ROLE.
+#
+# Re-read every 30s without restarting; an invalid edit is rejected and the
+# previous policy stays active. mongo-express uses one shared MongoDB
+# connection, so this policy is what separates users' permissions.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo-express-rbac
+data:
+  policy.default: role:readonly
+  policy.csv: |
+    g, REPLACE-admin-group, role:admin
+    g, REPLACE-editor-group, role:editor
+    g, REPLACE-viewer-group, role:readonly
+    # Namespace-scoped example:
+    # p, role:orders-team, documents, *, app/orders*, allow
+    # g, REPLACE-orders-group, role:orders-team

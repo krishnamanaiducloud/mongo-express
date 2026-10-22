@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,9 +15,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/audit"
-	"github.com/krishnamanaiducloud/mongo-express/portal/internal/identity"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/mongoconn"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/query"
+	"github.com/krishnamanaiducloud/mongo-express/portal/internal/rbac"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/session"
 )
 
@@ -34,10 +35,23 @@ type shellRequest struct {
 type shellFn func(s *Server, ctx context.Context, rc *reqCtx, args string) (any, error)
 
 type shellOp struct {
-	write       bool // requires the SRE portal role
+	// checks are the RBAC permissions the operation needs on its namespace
+	// (see shellChecks).
+	checks      []shellCheck
 	destructive bool // requires X-Confirm: <op>
 	fn          shellFn
 }
+
+// shellCheck is one RBAC permission; db says the object is the database
+// (otherwise the "db/coll" namespace, or the database for database-level
+// operations without a collection).
+type shellCheck struct {
+	res rbac.Resource
+	act rbac.Action
+	db  bool
+}
+
+func need(res rbac.Resource, act rbac.Action) []shellCheck { return []shellCheck{{res: res, act: act}} }
 
 // policyError is a portal policy refusal (HTTP 403).
 type policyError struct{ msg string }
@@ -52,34 +66,34 @@ func init() {
 	shellOps = map[string]shellOp{
 		"connectionInfo":         {fn: shConnectionInfo},
 		"listDatabases":          {fn: shListDatabases},
-		"listCollections":        {fn: shListCollections},
-		"getIndexes":             {fn: shGetIndexes},
-		"find":                   {fn: shFind},
-		"aggregate":              {fn: shAggregate},
+		"listCollections":        {checks: []shellCheck{{res: rbac.Databases, act: rbac.Get, db: true}}, fn: shListCollections},
+		"getIndexes":             {checks: need(rbac.Indexes, rbac.Get), fn: shGetIndexes},
+		"find":                   {checks: need(rbac.Documents, rbac.Get), fn: shFind},
+		"aggregate":              {checks: need(rbac.Documents, rbac.Get), fn: shAggregate},
 		"getMore":                {fn: shGetMore},
 		"killCursor":             {fn: shKillCursor},
-		"countDocuments":         {fn: shCountDocuments},
-		"estimatedDocumentCount": {fn: shEstimatedCount},
-		"distinct":               {fn: shDistinct},
-		"explain":                {fn: shExplain},
-		"runCommand":             {fn: shRunCommand},
-		"insertOne":              {write: true, fn: shInsertOne},
-		"insertMany":             {write: true, fn: shInsertMany},
-		"updateOne":              {write: true, fn: shUpdate(false)},
-		"updateMany":             {write: true, destructive: true, fn: shUpdate(true)},
-		"replaceOne":             {write: true, fn: shReplaceOne},
-		"deleteOne":              {write: true, fn: shDelete(false)},
-		"deleteMany":             {write: true, destructive: true, fn: shDelete(true)},
-		"findOneAndDelete":       {write: true, fn: shFindOneAndDelete},
-		"findOneAndReplace":      {write: true, fn: shFindOneAndReplace},
-		"findOneAndUpdate":       {write: true, fn: shFindOneAndUpdate},
-		"bulkWrite":              {write: true, destructive: true, fn: shBulkWrite},
-		"createIndexes":          {write: true, fn: shCreateIndexes},
-		"dropIndexes":            {write: true, destructive: true, fn: shDropIndexes},
-		"createCollection":       {write: true, fn: shCreateCollection},
-		"dropCollection":         {write: true, destructive: true, fn: shDropCollection},
-		"dropDatabase":           {write: true, destructive: true, fn: shDropDatabase},
-		"renameCollection":       {write: true, destructive: true, fn: shRenameCollection},
+		"countDocuments":         {checks: need(rbac.Documents, rbac.Get), fn: shCountDocuments},
+		"estimatedDocumentCount": {checks: need(rbac.Documents, rbac.Get), fn: shEstimatedCount},
+		"distinct":               {checks: need(rbac.Documents, rbac.Get), fn: shDistinct},
+		"explain":                {checks: need(rbac.Documents, rbac.Get), fn: shExplain},
+		"runCommand":             {checks: []shellCheck{{res: rbac.Databases, act: rbac.Get, db: true}}, fn: shRunCommand},
+		"insertOne":              {checks: need(rbac.Documents, rbac.Create), fn: shInsertOne},
+		"insertMany":             {checks: need(rbac.Documents, rbac.Create), fn: shInsertMany},
+		"updateOne":              {checks: need(rbac.Documents, rbac.Update), fn: shUpdate(false)},
+		"updateMany":             {checks: need(rbac.Documents, rbac.Update), destructive: true, fn: shUpdate(true)},
+		"replaceOne":             {checks: need(rbac.Documents, rbac.Update), fn: shReplaceOne},
+		"deleteOne":              {checks: need(rbac.Documents, rbac.Delete), fn: shDelete(false)},
+		"deleteMany":             {checks: need(rbac.Documents, rbac.Delete), destructive: true, fn: shDelete(true)},
+		"findOneAndDelete":       {checks: need(rbac.Documents, rbac.Delete), fn: shFindOneAndDelete},
+		"findOneAndReplace":      {checks: need(rbac.Documents, rbac.Update), fn: shFindOneAndReplace},
+		"findOneAndUpdate":       {checks: need(rbac.Documents, rbac.Update), fn: shFindOneAndUpdate},
+		"bulkWrite":              {checks: []shellCheck{{res: rbac.Documents, act: rbac.Create}, {res: rbac.Documents, act: rbac.Update}, {res: rbac.Documents, act: rbac.Delete}}, destructive: true, fn: shBulkWrite},
+		"createIndexes":          {checks: need(rbac.Indexes, rbac.Create), fn: shCreateIndexes},
+		"dropIndexes":            {checks: need(rbac.Indexes, rbac.Delete), destructive: true, fn: shDropIndexes},
+		"createCollection":       {checks: need(rbac.Collections, rbac.Create), fn: shCreateCollection},
+		"dropCollection":         {checks: need(rbac.Collections, rbac.Delete), destructive: true, fn: shDropCollection},
+		"dropDatabase":           {checks: []shellCheck{{res: rbac.Databases, act: rbac.Delete, db: true}}, destructive: true, fn: shDropDatabase},
+		"renameCollection":       {checks: need(rbac.Collections, rbac.Update), destructive: true, fn: shRenameCollection},
 	}
 }
 
@@ -100,11 +114,18 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 		writeError(w, r, http.StatusBadRequest, "unsupported_operation", fmt.Sprintf("Operation %q is not supported by the portal shell", req.Op))
 		return
 	}
-	if op.write && !rc.id.Role.CanWrite() {
-		s.Metrics.AuthzDenials.WithLabelValues("portal", "role_read_only").Inc()
-		s.Audit.Record(r.Context(), s.shellEvent(rc, req.Op, "", "", audit.Denied, "portal role "+string(rc.id.Role)+" is read-only"))
-		writeError(w, r, http.StatusForbidden, "portal_role_forbidden", "Your portal role is read-only; "+req.Op+" requires SRE access")
+	if !s.authorize(w, r, rc, rbac.Shell, rbac.Use, "*") {
 		return
+	}
+	for _, c := range shellChecks(req.Op, op, req.Args) {
+		if !s.allowed(rc, c.res, c.act, c.object) {
+			s.Metrics.AuthzDenials.WithLabelValues("portal", "rbac").Inc()
+			reason := fmt.Sprintf("%s %s %s", c.res, c.act, c.object)
+			s.Audit.Record(r.Context(), s.shellEvent(rc, req.Op, "", "", audit.Denied, reason))
+			writeError(w, r, http.StatusForbidden, "portal_role_forbidden",
+				fmt.Sprintf("Your portal role does not allow %s (%s %s on %q)", req.Op, c.act, c.res, c.object))
+			return
+		}
 	}
 	if op.destructive && r.Header.Get("X-Confirm") != req.Op {
 		writeError(w, r, http.StatusPreconditionRequired, "confirmation_required", req.Op+" requires confirmation")
@@ -136,6 +157,54 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 	writeJSON(w, http.StatusOK, map[string]string{"result": string(out)})
 }
 
+type resolvedCheck struct {
+	res    rbac.Resource
+	act    rbac.Action
+	object string
+}
+
+// shellChecks resolves the RBAC objects of an operation from its arguments.
+// Arguments that cannot be read are left to the operation, which rejects
+// them; namespace names are validated there as well.
+func shellChecks(name string, op shellOp, args string) []resolvedCheck {
+	if len(op.checks) == 0 {
+		return nil
+	}
+	var a struct {
+		DB   string `bson:"db"`
+		Coll string `bson:"coll"`
+		From string `bson:"from"`
+		To   string `bson:"to"`
+	}
+	var m bson.M
+	if strings.TrimSpace(args) != "" && bson.UnmarshalExtJSON([]byte(args), false, &m) == nil {
+		a.DB, _ = m["db"].(string)
+		a.Coll, _ = m["coll"].(string)
+		a.From, _ = m["from"].(string)
+		a.To, _ = m["to"].(string)
+	}
+	var out []resolvedCheck
+	if name == "renameCollection" {
+		return []resolvedCheck{
+			{rbac.Collections, rbac.Update, rbac.Namespace(a.DB, a.From)},
+			{rbac.Collections, rbac.Create, rbac.Namespace(a.DB, a.To)},
+		}
+	}
+	for _, c := range op.checks {
+		obj := rbac.Namespace(a.DB, a.Coll)
+		switch {
+		case c.db:
+			obj = a.DB
+		case a.Coll == "":
+			// Database-level operation (for example db.aggregate).
+			out = append(out, resolvedCheck{rbac.Databases, rbac.Get, a.DB})
+			obj = rbac.Namespace(a.DB, "*")
+		}
+		out = append(out, resolvedCheck{c.res, c.act, obj})
+	}
+	return out
+}
+
 type confirmKey struct{}
 
 func withConfirm(ctx context.Context, v string) context.Context {
@@ -148,11 +217,8 @@ func confirmed(ctx context.Context, op string) bool {
 }
 
 func (s *Server) shellEvent(rc *reqCtx, op, db, coll, outcome, reason string) audit.Event {
-	e := audit.Event{RequestID: rc.requestID, SSOUser: rc.id.User, PortalRole: string(rc.id.Role),
-		Action: "shell_" + op, Database: db, Collection: coll, Outcome: outcome, Reason: reason}
-	if rc.sess != nil {
-		e.MongoUser, e.Profile = rc.sess.MongoUser+"@"+rc.sess.AuthSource, rc.sess.Profile
-	}
+	e := s.baseEvent(rc, "shell_"+op, outcome, reason)
+	e.Database, e.Collection = db, coll
 	return e
 }
 
@@ -358,12 +424,18 @@ func shListDatabases(s *Server, ctx context.Context, rc *reqCtx, args string) (a
 		}
 		dbs := bson.A{}
 		for _, n := range rc.sess.Status.Databases() {
+			if !s.allowed(rc, rbac.Databases, rbac.Get, n) {
+				continue
+			}
 			dbs = append(dbs, bson.M{"name": n, "sizeOnDisk": 0, "empty": false})
 		}
 		return bson.M{"databases": dbs, "ok": 1}, nil
 	}
 	dbs := bson.A{}
 	for _, d := range res.Databases {
+		if !s.allowed(rc, rbac.Databases, rbac.Get, d.Name) {
+			continue
+		}
 		dbs = append(dbs, bson.M{"name": d.Name, "sizeOnDisk": d.SizeOnDisk, "empty": d.Empty})
 	}
 	return bson.M{"databases": dbs, "totalSize": res.TotalSize, "ok": 1}, nil
@@ -403,6 +475,10 @@ func shListCollections(s *Server, ctx context.Context, rc *reqCtx, args string) 
 	if err != nil {
 		return nil, err
 	}
+	out = slices.DeleteFunc(out, func(c bson.Raw) bool {
+		name, _ := c.Lookup("name").StringValueOK()
+		return !s.allowed(rc, rbac.Collections, rbac.Get, rbac.Namespace(a.DB, name))
+	})
 	if out == nil {
 		out = []bson.Raw{}
 	}
@@ -633,7 +709,10 @@ func shAggregate(s *Server, ctx context.Context, rc *reqCtx, args string) (any, 
 	if err != nil {
 		return nil, err
 	}
-	policy := query.Policy{AllowWriteStages: rc.id.Role == identity.RoleSRE && s.Config.Query.AllowWriteStagesForSRE}
+	if reason, ok := s.pipelineAccess(rc, a.DB, stages); !ok {
+		return nil, deny("%s", reason)
+	}
+	policy := query.Policy{AllowWriteStages: s.Config.Query.AllowWriteStages}
 	if err := query.Pipeline(stages, policy); err != nil {
 		if query.HasWriteStage(stages) {
 			s.Metrics.AuthzDenials.WithLabelValues("portal", "write_stage").Inc()
@@ -981,8 +1060,8 @@ func shRunCommand(s *Server, ctx context.Context, rc *reqCtx, args string) (any,
 	case query.CommandDenied:
 		return nil, deny("the %q command is not permitted through the portal shell", name)
 	case query.CommandAdmin:
-		if !rc.id.Role.CanWrite() {
-			return nil, deny("the %q command requires the SRE portal role", name)
+		if !s.allowed(rc, rbac.Shell, rbac.Admin, a.DB) {
+			return nil, deny("the %q command requires the shell admin permission (shell, admin, %s)", name, a.DB)
 		}
 		if destructiveCommands[name] && !confirmed(ctx, "runCommand") {
 			return nil, deny("the %q command requires confirmation", name)

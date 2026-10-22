@@ -163,7 +163,7 @@ You can use the following [environment variables](https://docs.docker.com/refere
 | `ME_CONFIG_MONGODB_ENABLE_ADMIN`               | `true`                                              | Enable administrator access. Send strings: `"true"` or `"false"`.
 | `ME_CONFIG_MONGODB_ALLOW_DISK_USE`             | `false`                                             | Remove the limit of 100 MB of RAM on each aggregation pipeline stage.
 | `ME_CONFIG_MONGODB_TLS`                        | `false`                                             | Use TLS client certificate
-| `ME_CONFIG_MONGODB_TLS_ALLOW_CERTS`            | `true`                                              | Validate mongod server certificate against CA
+| `ME_CONFIG_MONGODB_TLS_ALLOW_CERTS`            | `false`                                             | Skip validating the mongod server certificate (`tlsAllowInvalidCertificates`). Leave `false` so the certificate is verified against the CA.
 | `ME_CONFIG_MONGODB_TLS_CA_FILE`                | ``                                                  | CA certificate File (.pem)
 | `ME_CONFIG_MONGODB_TLS_CERT_KEY_FILE`          | ``                                                  | TLS client certificate+key file (.pem)
 | `ME_CONFIG_MONGODB_TLS_CERT_KEY_FILE_PASSWORD` | ``                                                  | TLS client certificate key file password (.pem)
@@ -192,6 +192,14 @@ You can use the following [environment variables](https://docs.docker.com/refere
 | `ME_CONFIG_OIDCAUTH_SECRET_FILE`               | ``                                                  | File version of `ME_CONFIG_OIDCAUTH_SECRET_FILE`
 | `ME_CONFIG_OIDCAUTH_BASEURL`                   | ``                                                  | OAuth2 base url. It's used to build the redirect URL eg. `"<base-url>/callback"`. If not specified `ME_CONFIG_SITE_BASEURL` will be used.
 | `ME_CONFIG_OIDCAUTH_BASEURL_FILE`              | ``                                                  | File version of `ME_CONFIG_OIDCAUTH_BASEURL`
+| `ME_CONFIG_OPENSHIFT_OAUTH`                    | `false`                                             | Built-in OpenShift login (like Argo CD): `auto` offers it when the pod runs in OpenShift and the OAuth server is reachable, `true` also warns when it is not, `false` disables it. The local account (basic auth credentials) stays available on the sign-in page.
+| `ME_CONFIG_OPENSHIFT_PUBLIC_URL`               | ``                                                  | External origin for the OAuth redirect URI (default: the request host). The service account must reference the Route (`serviceaccounts.openshift.io/oauth-redirectreference.*`).
+| `ME_CONFIG_OPENSHIFT_API_URL`                  | `https://kubernetes.default.svc`                    | OpenShift API server.
+| `ME_CONFIG_OPENSHIFT_EXTRA_CA_FILES`           | ``                                                  | Comma-separated extra CA files for the API/OAuth servers (the service account CA and system roots are always trusted).
+| `ME_CONFIG_RBAC_POLICY`                        | ``                                                  | Argo CD-style RBAC policy CSV (`p, role:x, documents, update, app/*` and `g, <group>, role:x`).
+| `ME_CONFIG_RBAC_POLICY_DIR`                    | ``                                                  | Directory with `policy.csv` / `policy.default` (for example a mounted ConfigMap), re-read every 30 seconds.
+| `ME_CONFIG_RBAC_DEFAULT_ROLE`                  | `role:readonly`                                     | Role of signed-in OpenShift/OIDC users the policy does not map (`""` grants nothing).
+| `ME_CONFIG_RBAC_LOCAL_ROLE`                    | `role:admin`                                        | Role of the local account (basic auth / form sign-in, or no authentication).
 | `ME_CONFIG_REQUEST_SIZE`                       | `50`                                                | Used to configure maximum Mongo update payload size in MB. CRUD operations above this size will fail due to restrictions in [body-parser](https://www.npmjs.com/package/body-parser).
 | `ME_CONFIG_OPTIONS_READONLY`                   | `false`                                             | if readOnly is true, components of writing are not visible.
 | `ME_CONFIG_OPTIONS_FULLWIDTH_LAYOUT`           | `false`                                             | If set to true an alternative page layout is used utilizing full window width.

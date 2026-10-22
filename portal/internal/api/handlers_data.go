@@ -17,9 +17,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/audit"
-	"github.com/krishnamanaiducloud/mongo-express/portal/internal/identity"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/mongoconn"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/query"
+	"github.com/krishnamanaiducloud/mongo-express/portal/internal/rbac"
 	"github.com/krishnamanaiducloud/mongo-express/portal/internal/telemetry"
 )
 
@@ -96,14 +96,39 @@ func extJSON(v any, canonical bool) (json.RawMessage, error) {
 	return json.RawMessage(b), nil
 }
 
+// access describes what the user may do on a database (coll == "") or a
+// collection: "portal" is the RBAC decision, "mongo" the MongoDB privileges
+// of the session. The UI offers an action only when both allow it.
 func (s *Server) access(rc *reqCtx, db, coll string) map[string]any {
 	caps := rc.sess.Status.CapabilitiesFor(db, coll)
-	return map[string]any{"portalWrite": rc.id.Role.CanWrite(), "mongo": caps}
+	ns := rbac.Namespace(db, coll)
+	if coll == "" {
+		ns = rbac.Namespace(db, "*")
+	}
+	portal := map[string]bool{
+		"find":             s.allowed(rc, rbac.Documents, rbac.Get, ns),
+		"insert":           s.allowed(rc, rbac.Documents, rbac.Create, ns),
+		"update":           s.allowed(rc, rbac.Documents, rbac.Update, ns),
+		"remove":           s.allowed(rc, rbac.Documents, rbac.Delete, ns),
+		"createIndex":      s.allowed(rc, rbac.Indexes, rbac.Create, ns),
+		"dropIndex":        s.allowed(rc, rbac.Indexes, rbac.Delete, ns),
+		"createCollection": s.allowed(rc, rbac.Collections, rbac.Create, ns),
+		"dropCollection":   s.allowed(rc, rbac.Collections, rbac.Delete, ns),
+		"dropDatabase":     s.allowed(rc, rbac.Databases, rbac.Delete, db),
+	}
+	return map[string]any{
+		"portalWrite": portal["insert"] || portal["update"] || portal["remove"],
+		"portal":      portal,
+		"mongo":       caps,
+	}
 }
 
 // ---- server and databases ----
 
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
+	if !s.authorize(w, r, rc, rbac.Server, rbac.Get, rc.sess.Profile) {
+		return
+	}
 	var build, hello bson.M
 	admin := rc.sess.Client.Database("admin")
 	err := s.op(r.Context(), "buildInfo", s.defaultTimeout(), func(ctx context.Context) error {
@@ -164,6 +189,7 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request, rc 
 			out = append(out, dbView{Name: d.Name, SizeOnDisk: d.SizeOnDisk, Empty: d.Empty})
 		}
 	}
+	out = slices.DeleteFunc(out, func(d dbView) bool { return !s.allowed(rc, rbac.Databases, rbac.Get, d.Name) })
 	slices.SortFunc(out, func(a, b dbView) int { return strings.Compare(a.Name, b.Name) })
 	if out == nil {
 		out = []dbView{}
@@ -174,6 +200,9 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request, rc 
 func (s *Server) handleDatabaseStats(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	db, _, ok := nsParams(w, r, false)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, rc, rbac.Databases, rbac.Get, db) {
 		return
 	}
 	var stats bson.M
@@ -197,6 +226,9 @@ func (s *Server) handleDatabaseStats(w http.ResponseWriter, r *http.Request, rc 
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	db, _, ok := nsParams(w, r, false)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, rc, rbac.Databases, rbac.Get, db) {
 		return
 	}
 	type collView struct {
@@ -223,6 +255,9 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request, r
 	}
 	out := make([]collView, 0, len(specs))
 	for _, sp := range specs {
+		if !s.allowed(rc, rbac.Collections, rbac.Get, rbac.Namespace(db, sp.Name)) {
+			continue
+		}
 		v := collView{Name: sp.Name, Type: sp.Type, ReadOnly: sp.ReadOnly, Access: s.access(rc, db, sp.Name)}
 		if len(sp.Options) > 0 {
 			v.Options, _ = extJSON(sp.Options, false)
@@ -248,6 +283,9 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request, 
 		writeError(w, r, http.StatusBadRequest, "invalid_name", "Invalid collection name")
 		return
 	}
+	if !s.authorize(w, r, rc, rbac.Collections, rbac.Create, rbac.Namespace(db, req.Name)) {
+		return
+	}
 	err := s.op(r.Context(), "createCollection", s.defaultTimeout(), func(ctx context.Context) error {
 		return rc.sess.Client.Database(db).CreateCollection(ctx, req.Name)
 	})
@@ -262,6 +300,9 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request, 
 func (s *Server) handleDropCollection(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	db, coll, ok := nsParams(w, r, true)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, rc, rbac.Collections, rbac.Delete, rbac.Namespace(db, coll)) {
 		return
 	}
 	if query.SystemCollection(coll) {
@@ -283,14 +324,17 @@ func (s *Server) handleDropCollection(w http.ResponseWriter, r *http.Request, rc
 }
 
 func (s *Server) dataEvent(rc *reqCtx, action, db, coll, target string) audit.Event {
-	return audit.Event{RequestID: rc.requestID, SSOUser: rc.id.User, PortalRole: string(rc.id.Role),
-		MongoUser: rc.sess.MongoUser + "@" + rc.sess.AuthSource, Profile: rc.sess.Profile,
-		Action: action, Database: db, Collection: coll, Target: target, Outcome: audit.Success}
+	e := s.baseEvent(rc, action, audit.Success, "")
+	e.Database, e.Collection, e.Target = db, coll, target
+	return e
 }
 
 func (s *Server) handleCollectionStats(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	db, coll, ok := nsParams(w, r, true)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, rc, rbac.Collections, rbac.Get, rbac.Namespace(db, coll)) {
 		return
 	}
 	c := rc.sess.Client.Database(db).Collection(coll)
@@ -489,6 +533,9 @@ func (s *Server) handleFindDocuments(w http.ResponseWriter, r *http.Request, rc 
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, rc, rbac.Documents, rbac.Get, rbac.Namespace(db, coll)) {
+		return
+	}
 	q := r.URL.Query()
 	spec, err := s.buildFind(q.Get("filter"), q.Get("projection"), q.Get("sort"))
 	if err != nil {
@@ -552,6 +599,9 @@ func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request, rc *r
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, rc, rbac.Documents, rbac.Get, rbac.Namespace(db, coll)) {
+		return
+	}
 	id, err := decodeID(r.PathValue("id"))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_id", err.Error())
@@ -613,6 +663,9 @@ func (s *Server) handleInsertDocument(w http.ResponseWriter, r *http.Request, rc
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, rc, rbac.Documents, rbac.Create, rbac.Namespace(db, coll)) {
+		return
+	}
 	if query.SystemCollection(coll) {
 		writeError(w, r, http.StatusForbidden, "system_collection", "System collections cannot be modified through the portal")
 		return
@@ -641,6 +694,9 @@ func (s *Server) handleInsertDocument(w http.ResponseWriter, r *http.Request, rc
 func (s *Server) handleReplaceDocument(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	db, coll, ok := nsParams(w, r, true)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, rc, rbac.Documents, rbac.Update, rbac.Namespace(db, coll)) {
 		return
 	}
 	if query.SystemCollection(coll) {
@@ -692,6 +748,9 @@ func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request, rc
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, rc, rbac.Documents, rbac.Delete, rbac.Namespace(db, coll)) {
+		return
+	}
 	if query.SystemCollection(coll) {
 		writeError(w, r, http.StatusForbidden, "system_collection", "System collections cannot be modified through the portal")
 		return
@@ -738,6 +797,9 @@ type queryRequest struct {
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	db, coll, ok := nsParams(w, r, true)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, rc, rbac.Documents, rbac.Get, rbac.Namespace(db, coll)) {
 		return
 	}
 	var req queryRequest
@@ -792,7 +854,10 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 			bad(err)
 			return
 		}
-		policy := query.Policy{AllowWriteStages: rc.id.Role == identity.RoleSRE && s.Config.Query.AllowWriteStagesForSRE}
+		if !s.authorizePipeline(w, r, rc, db, stages) {
+			return
+		}
+		policy := query.Policy{AllowWriteStages: s.Config.Query.AllowWriteStages}
 		if err := query.Pipeline(stages, policy); err != nil {
 			if query.HasWriteStage(stages) {
 				s.Metrics.AuthzDenials.WithLabelValues("portal", "write_stage").Inc()
@@ -849,6 +914,9 @@ func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request, rc *r
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, rc, rbac.Indexes, rbac.Get, rbac.Namespace(db, coll)) {
+		return
+	}
 	var out []json.RawMessage
 	err := s.op(r.Context(), "listIndexes", s.defaultTimeout(), func(ctx context.Context) error {
 		cur, err := rc.sess.Client.Database(db).Collection(coll).Indexes().List(ctx)
@@ -878,6 +946,9 @@ func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request, rc *r
 func (s *Server) handleCreateIndex(w http.ResponseWriter, r *http.Request, rc *reqCtx) {
 	db, coll, ok := nsParams(w, r, true)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, rc, rbac.Indexes, rbac.Create, rbac.Namespace(db, coll)) {
 		return
 	}
 	var req struct {
@@ -944,6 +1015,9 @@ func (s *Server) handleDropIndex(w http.ResponseWriter, r *http.Request, rc *req
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, rc, rbac.Indexes, rbac.Delete, rbac.Namespace(db, coll)) {
+		return
+	}
 	name := r.PathValue("name")
 	if !query.ValidIndexName(name) {
 		writeError(w, r, http.StatusBadRequest, "invalid_name", "Invalid index name")
@@ -965,4 +1039,41 @@ func (s *Server) handleDropIndex(w http.ResponseWriter, r *http.Request, rc *req
 	}
 	s.Audit.Record(r.Context(), s.dataEvent(rc, "drop_index", db, coll, name))
 	writeJSON(w, http.StatusOK, map[string]any{"dropped": name})
+}
+
+// pipelineAccess checks the collections an aggregation reads through
+// $lookup/$graphLookup/$unionWith and writes through $out/$merge against the
+// RBAC policy. It returns a reason when access is denied.
+func (s *Server) pipelineAccess(rc *reqCtx, db string, stages []bson.D) (string, bool) {
+	reads, ok := query.ReadNamespaces(stages, db)
+	if !ok {
+		return "the pipeline references a collection that cannot be determined", false
+	}
+	for _, n := range reads {
+		if !s.allowed(rc, rbac.Documents, rbac.Get, rbac.Namespace(n.DB, n.Coll)) {
+			return "your portal role does not allow reading " + rbac.Namespace(n.DB, n.Coll), false
+		}
+	}
+	if query.HasWriteStage(stages) {
+		t, ok := query.WriteTarget(stages, db)
+		if !ok {
+			return "the output collection of the pipeline cannot be determined", false
+		}
+		ns := rbac.Namespace(t.DB, t.Coll)
+		if !s.allowed(rc, rbac.Documents, rbac.Create, ns) || !s.allowed(rc, rbac.Documents, rbac.Update, ns) || !s.allowed(rc, rbac.Documents, rbac.Delete, ns) {
+			return "your portal role does not allow writing to " + ns, false
+		}
+	}
+	return "", true
+}
+
+func (s *Server) authorizePipeline(w http.ResponseWriter, r *http.Request, rc *reqCtx, db string, stages []bson.D) bool {
+	reason, ok := s.pipelineAccess(rc, db, stages)
+	if ok {
+		return true
+	}
+	s.Metrics.AuthzDenials.WithLabelValues("portal", "rbac").Inc()
+	s.auditEvent(r, rc, "aggregate_denied", audit.Denied, reason)
+	writeError(w, r, http.StatusForbidden, "portal_role_forbidden", reason)
+	return false
 }

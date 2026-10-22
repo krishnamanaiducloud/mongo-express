@@ -14,18 +14,22 @@ import (
 
 // Event is one audit record.
 type Event struct {
-	Time       time.Time `json:"time"`
-	RequestID  string    `json:"requestId,omitempty"`
-	SSOUser    string    `json:"ssoUser"`
-	PortalRole string    `json:"portalRole,omitempty"`
-	MongoUser  string    `json:"mongoUser,omitempty"`
-	Profile    string    `json:"profile,omitempty"`
-	Action     string    `json:"action"`
-	Database   string    `json:"database,omitempty"`
-	Collection string    `json:"collection,omitempty"`
-	Target     string    `json:"target,omitempty"`
-	Outcome    string    `json:"outcome"`
-	Reason     string    `json:"reason,omitempty"`
+	Time      time.Time `json:"time"`
+	RequestID string    `json:"requestId,omitempty"`
+	SSOUser   string    `json:"ssoUser"`
+	// Identity is how the user signed in (openshift, header, dev, mongodb).
+	Identity string `json:"identity,omitempty"`
+	// Owner is the principal key used to show users their own events.
+	Owner      string `json:"-"`
+	PortalRole string `json:"portalRole,omitempty"`
+	MongoUser  string `json:"mongoUser,omitempty"`
+	Profile    string `json:"profile,omitempty"`
+	Action     string `json:"action"`
+	Database   string `json:"database,omitempty"`
+	Collection string `json:"collection,omitempty"`
+	Target     string `json:"target,omitempty"`
+	Outcome    string `json:"outcome"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // Outcomes.
@@ -61,6 +65,7 @@ func (l *Log) Record(ctx context.Context, e Event) {
 		slog.Bool("audit", true),
 		slog.String("request_id", e.RequestID),
 		slog.String("sso_user", e.SSOUser),
+		slog.String("identity", e.Identity),
 		slog.String("portal_role", e.PortalRole),
 		slog.String("mongo_user", e.MongoUser),
 		slog.String("profile", e.Profile),
@@ -80,9 +85,9 @@ func (l *Log) Record(ctx context.Context, e Event) {
 	l.mu.Unlock()
 }
 
-// Recent returns up to limit events, newest first, optionally filtered to a
-// single SSO user.
-func (l *Log) Recent(ssoUser string, limit int) []Event {
+// Recent returns up to limit events, newest first, optionally filtered to one
+// principal (owner key).
+func (l *Log) Recent(owner string, limit int) []Event {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n := l.next
@@ -93,7 +98,7 @@ func (l *Log) Recent(ssoUser string, limit int) []Event {
 	for i := 0; i < n && len(out) < limit; i++ {
 		idx := (l.next - 1 - i + len(l.buf)) % len(l.buf)
 		e := l.buf[idx]
-		if ssoUser == "" || e.SSOUser == ssoUser {
+		if owner == "" || e.Owner == owner {
 			out = append(out, e)
 		}
 	}
