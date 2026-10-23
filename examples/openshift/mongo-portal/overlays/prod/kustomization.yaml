@@ -17,11 +17,11 @@ configMapGenerator:
       - config.yaml
 
 # Production images are pinned by immutable digest (updated by the release
-# pipeline). Current: mongo-portal 0.3.0 (commit 74ec358).
+# pipeline). Current: mongo-portal 0.4.0 (commit 7c45b53).
 images:
   - name: docker.io/mohankrishna999/mongo-express
     newName: docker.io/mohankrishna999/mongo-express
-    digest: sha256:92c5cf140e3106ead1e53bf0372fd7b98000786af7a63a3574139a565ffc78f6
+    digest: sha256:a35cb8b2bba1b5bb89c4487033120020b5fc4c407eaa987b4e34b7c0c8bb7cfb
 
 patches:
   - path: patch-rbac.yaml

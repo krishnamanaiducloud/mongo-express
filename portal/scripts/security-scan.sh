@@ -39,7 +39,7 @@ section "hadolint (Dockerfile)"
 hadolint "$ROOT/Dockerfile" | tee "$OUT/hadolint.txt" || status=1
 
 section "trivy config (Dockerfile + Kubernetes manifests)"
-DEPLOY="$(cd "$ROOT/../deploy" 2>/dev/null && pwd)"
+DEPLOY="$(cd "$ROOT/../examples/openshift/mongo-portal" 2>/dev/null && pwd)"
 trivy config --quiet --severity HIGH,CRITICAL --exit-code 0 "$ROOT/Dockerfile" | tee "$OUT/trivy-config-dockerfile.txt"
 if [ -n "$DEPLOY" ]; then
   for env in dev test prod; do kubectl kustomize "$DEPLOY/overlays/$env" > "$OUT/rendered-$env.yaml"; done

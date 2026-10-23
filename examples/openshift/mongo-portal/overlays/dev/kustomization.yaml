@@ -23,7 +23,7 @@ images:
   # The diagnostic variant is used in dev; test and prod use the minimal image.
   - name: docker.io/mohankrishna999/mongo-express
     newName: docker.io/mohankrishna999/mongo-express
-    newTag: 0.3.0-debug
+    newTag: 0.4.0-debug
 
 replicas:
   - name: mongo-portal

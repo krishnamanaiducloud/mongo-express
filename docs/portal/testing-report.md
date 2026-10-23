@@ -1,5 +1,37 @@
 # Testing and validation report
 
+## Release 0.4.0: MongoDB-following default role, monitoring, shell console
+
+0.4.0 makes `role:mongodb` (follow the user's MongoDB privileges) the default
+role. The default role now applies only to users the policy does not map. It
+also adds the Monitoring page and API, the total size on the Databases page,
+and a terminal-style shell console. Results before publication (local images,
+linux/amd64):
+
+| Suite | Result |
+| --- | --- |
+| Go unit tests, `go vet` | pass, incl. `TestDefaultRoleOnlyForUnmappedUsers`, `TestMonitoringIsPassive` (every section fails independently, 401 without a session), helpers for both decoded document forms |
+| Integration (real MongoDB replica sets, TLS + non-TLS) | pass, incl. new `TestMonitoring` (3 members, 1 primary, connections total = active + idle, total size, own pool; a user without `clusterMonitor` gets an explanation while sizes still work) and `TestDefaultRoleFollowsMongoDB` (unmapped writer inserts; unmapped reader refused by MongoDB) |
+| Web (`tsc`, ESLint, Vitest 39 tests, build) | pass, incl. Monitoring page with and without `clusterMonitor` (hello topology fallback), shell highlighter round trip, `role:mongodb` label |
+| Container smoke | 74 / 74 |
+| Browser e2e | PASS, incl. the redesigned shell (completion, confirmations, interrupt) and the Monitoring page for a user without `clusterMonitor` |
+| mongo-express mocha (177, 11 pending), ESLint, image tests | pass, 40 / 40 (default role only for unmapped subjects) |
+
+Defect found by the new integration test and fixed: replica set members were
+missing because array elements decode as `bson.D`, not `bson.M`.
+
+Published from commit 7c45b53 (multi-arch linux/amd64 + linux/arm64, SBOM and
+max-mode provenance; the tags did not exist before):
+
+| Image | Digest | Verification |
+| --- | --- | --- |
+| `docker.io/mohankrishna999/mongo-express:0.4.0` (portal) | `sha256:a35cb8b2bba1b5bb89c4487033120020b5fc4c407eaa987b4e34b7c0c8bb7cfb` | pulled image reports 0.4.0 (7c45b53) go1.27.3; smoke 74/74 and browser e2e PASS on the published image; Trivy by digest: 1 Unknown (GO-2026-5932, not reachable: govulncheck 0 called) |
+| `docker.io/mohankrishna999/mongo-express:0.4.0-debug` (portal) | `sha256:54f9a731f25684f2be2fac4c1ab7d81e4650ded268408f4eef5d1a9f7c049459` | Trivy by digest: 1 Unknown (same) |
+
+The prod overlay and `examples/mongo-portal/deployment.yml` pin the 0.4.0
+digest; dev uses `0.4.0-debug`, test `0.4.0`. The mongo-express images stay
+at 0.0.2; its default-role change ships with the next mongo-express image.
+
 ## Release 0.3.0: built-in OpenShift login, RBAC, passive integrations
 
 0.3.0 replaces the OAuth proxy sidecar with a built-in OpenShift login (Argo CD

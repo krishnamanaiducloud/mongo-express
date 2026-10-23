@@ -29,7 +29,7 @@ scan:
 	bash scripts/security-scan.sh mongo-portal:production mongo-portal:debug
 
 render:
-	for env in dev test prod; do kubectl kustomize ../deploy/overlays/$$env > /dev/null && echo "$$env ok"; done
+	for env in dev test prod; do kubectl kustomize ../examples/openshift/mongo-portal/overlays/$$env > /dev/null && echo "$$env ok"; done
 
 # Publishing is normally done by the CI release job. Manual use requires an
 # explicit decision and `docker login`; existing tags are never overwritten.
