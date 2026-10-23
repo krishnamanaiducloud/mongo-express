@@ -4,7 +4,7 @@
 
 0.3.0 replaces the OAuth proxy sidecar with a built-in OpenShift login (Argo CD
 style), adds Argo CD-style RBAC and makes every optional integration passive.
-The mongo-express images (0.1.0) gain the same OpenShift login and RBAC.
+The mongo-express images (0.0.2) gain the same OpenShift login and RBAC.
 Results before publication (local images, linux/amd64):
 
 | Suite | Result |
@@ -17,6 +17,18 @@ Results before publication (local images, linux/amd64):
 | mongo-express image tests (`scripts/test-images.sh`) | 40 / 40, incl. passive OpenShift login outside OpenShift and RBAC on the local account, for both images |
 | Manifests (kustomize + kubeconform, OpenShift 4.18 schemas) | all overlays valid; no StatefulSet/PVC/Secret, no fixed UID, no cluster RBAC from app overlays, no OAuth proxy |
 | Scans | mongo-express minimal: Trivy no findings; debug: 8 × UNKNOWN GO-2026-5932 (documented exception); hadolint clean |
+
+Published from commit 74ec358 (multi-arch linux/amd64 + linux/arm64, SBOM and
+max-mode provenance attached; existing tags were checked and none overwritten):
+
+| Image | Digest | Verification |
+| --- | --- | --- |
+| `docker.io/mohankrishna999/mongo-express:0.3.0` (portal) | `sha256:92c5cf140e3106ead1e53bf0372fd7b98000786af7a63a3574139a565ffc78f6` | pulled image reports 0.3.0 (74ec358) go1.27.3; smoke 74/74 and browser e2e PASS on the published image; Trivy by digest: 1 Unknown |
+| `docker.io/mohankrishna999/mongo-express:0.3.0-debug` (portal) | `sha256:0182e3e5ee7cf6542824a8b445c8f4ad119f58694c5a84b6f861456368f8a375` | Trivy by digest: 1 Unknown |
+| `docker.io/mohankrishna999/mongo-express:0.0.2` (mongo-express) | `sha256:2d97adc4b4b196efc6d207ff5ec0adc4c1704c3b67097f960ef7a0ca1a3167a2` | image tests 40/40 on the published images; Trivy by digest: no findings |
+| `docker.io/mohankrishna999/mongo-express:0.0.2-debug` (mongo-express) | `sha256:8d5516717165e2f77c0135577e6e9b058f89d3b29c6112619780c99aa83ac52d` | Trivy by digest: 8 × UNKNOWN (GO-2026-5932, documented) |
+
+The prod overlays pin these digests; dev uses the debug tags, test (portal) `0.3.0`.
 
 Not covered: a real OpenShift OAuth server end to end. The flow is exercised
 against faithful fakes of the discovery, token and `users/~` endpoints; verify

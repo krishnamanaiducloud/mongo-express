@@ -7,11 +7,11 @@ namespace: mongo-express-prod
 resources:
   - ../../base
 
-# Minimal image 0.0.1 pinned by immutable digest (multi-arch index).
+# Minimal image 0.0.2 pinned by immutable digest (multi-arch index, commit 74ec358).
 images:
   - name: docker.io/mohankrishna999/mongo-express
     newName: docker.io/mohankrishna999/mongo-express
-    digest: sha256:65800e39002e8a5e23d54b5bd51dc382975e0770c064acf9ed2d7e65fb8f1115
+    digest: sha256:2d97adc4b4b196efc6d207ff5ec0adc4c1704c3b67097f960ef7a0ca1a3167a2
 
 replicas:
   - name: mongo-express

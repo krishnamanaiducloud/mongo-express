@@ -25,4 +25,4 @@ labels:
 images:
   - name: mongo-express
     newName: docker.io/mohankrishna999/mongo-express
-    newTag: 0.0.1
+    newTag: 0.0.2

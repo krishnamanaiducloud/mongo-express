@@ -179,7 +179,7 @@ g, orders-team, role:orders-team
 ## Troubleshooting with the debug image
 
 ```bash
-oc set image deploy/mongo-express mongo-express=docker.io/mohankrishna999/mongo-express:0.0.1-debug -n $NS
+oc set image deploy/mongo-express mongo-express=docker.io/mohankrishna999/mongo-express:0.0.2-debug -n $NS
 oc rsh deploy/mongo-express bash
   dig +short <mongo-host>; curl -kv https://localhost:8081/status
   mongosh "$ME_CONFIG_MONGODB_URL" --eval 'db.adminCommand({ping:1})'

@@ -19,7 +19,7 @@ configMapGenerator:
 images:
   - name: docker.io/mohankrishna999/mongo-express
     newName: docker.io/mohankrishna999/mongo-express
-    newTag: 0.2.0
+    newTag: 0.3.0
 
 patches:
   - path: patch-rbac.yaml
