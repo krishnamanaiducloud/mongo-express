@@ -19,8 +19,8 @@ examples/openshift/
 └── plain/              The same prod resources as plain YAML files (no Kustomize), like examples/kubernetes
 ```
 
-No Kustomize? Use [`plain/`](plain/README.md): one file per resource, applied
-with `oc apply -n <namespace> -f examples/openshift/plain/<app>/`.
+No Kustomize? Use the plain files: [`examples/mongo-portal`](../mongo-portal/README.md)
+for the portal and [`plain/mongo-express`](plain/README.md) for mongo-express.
 
 ## What both applications provide
 

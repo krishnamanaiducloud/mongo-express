@@ -6,7 +6,7 @@ these if you do not want Kustomize (`oc apply -k`) or Argo CD.
 
 * No namespace is written in the files; you choose it with `oc apply -n <namespace>`.
 * Files are numbered in apply order. `oc apply -f <dir>/` applies them all
-  (not the `cluster/` and `optional/` subfolders, which are applied separately).
+  (not the `cluster/` subfolder, which is applied separately).
 * `secrets.yml.example` is a template. Its extension keeps it from being applied
   by accident.
 * These files are generated from the Kustomize overlays. After editing the
@@ -14,11 +14,8 @@ these if you do not want Kustomize (`oc apply -k`) or Argo CD.
 
 ```
 plain/
-├── mongo-express/        mongo-express web admin (shared MongoDB connection, local account fallback)
-│   └── cluster/          SCC + ClusterRole (cluster-admin, once per cluster)
-└── mongo-portal/         multi-user portal (each user signs in with their own MongoDB account)
-    ├── cluster/          SCC + ClusterRole (cluster-admin, once per cluster)
-    └── optional/         ServiceMonitor (only with user-workload monitoring)
+└── mongo-express/        mongo-express web admin (shared MongoDB connection, local account fallback)
+    └── cluster/          SCC + ClusterRole (cluster-admin, once per cluster)
 ```
 
 ## mongo-express
@@ -60,35 +57,12 @@ OpenShift service CA from the annotation in `30-service-mongo-express.yml`.
 
 ## mongo-portal
 
-### 1. Edit before applying
-
-| File | Set |
-| --- | --- |
-| `20-configmap-mongo-portal-config.yml` | MongoDB hosts (`uri`), `replicaSet`, `defaultAuthSource`. **TLS decision:** with `environment: production` the portal refuses to start on a plaintext profile until you either enable MongoDB TLS (`tls.mode: enabled` + CA) or record an approved exception (`plaintextApproved: true`, `securityExceptionRef`). For a non-production namespace, set `environment` to something else, for example `dev` |
-| `60-networkpolicy-mongo-portal-egress.yml` | `REPLACE-mongodb-namespace`, `REPLACE-mongodb-pod-label` |
-| `21-configmap-mongo-portal-rbac.yml` | Your OpenShift group names → roles; optional `mongodb:<user>@admin` lines |
-
-### 2. Apply
-
-```bash
-NS=mongo-portal
-oc new-project $NS
-
-oc apply -f examples/openshift/plain/mongo-portal/cluster/            # cluster-admin, once
-oc create secret generic mongo-portal-session -n $NS --from-literal=session-key="$(openssl rand -hex 32)"
-# Only for TLS profiles:
-#   oc create configmap mongo-portal-mongodb-ca -n $NS --from-file=ca.crt=./mongodb-ca.pem
-#   oc create secret tls mongo-portal-mongodb-client -n $NS --cert=client.crt --key=client.key
-
-oc apply -n $NS -f examples/openshift/plain/mongo-portal/
-oc apply -n $NS -f examples/openshift/plain/mongo-portal/optional/    # only with user-workload monitoring
-oc rollout status deploy/mongo-portal -n $NS
-oc get route mongo-portal -n $NS -o jsonpath='https://{.spec.host}{"\n"}'
-```
+The portal's plain manifests are in [`examples/mongo-portal`](../../mongo-portal/README.md)
+(one clearly named file per resource, with instructions).
 
 ## Changing configuration later
 
-The main ConfigMaps (`mongo-express-config`, `mongo-portal-config`) are read at
+The main ConfigMap (`mongo-express-config`) is read at
 start-up. After editing them run `oc rollout restart deploy/<app> -n $NS`. The
 Kustomize overlays do this automatically with hashed names; plain files do not.
 
