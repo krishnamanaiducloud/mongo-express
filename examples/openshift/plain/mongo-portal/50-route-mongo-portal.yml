@@ -1,0 +1,25 @@
+# Generated from examples/openshift/mongo-portal/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-portal/
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  annotations:
+    haproxy.router.openshift.io/disable_cookies: "false"
+    haproxy.router.openshift.io/hsts_header: max-age=31536000;includeSubDomains
+    haproxy.router.openshift.io/timeout: 120s
+    router.openshift.io/cookie_name: mongo_portal_affinity
+  labels:
+    app.kubernetes.io/name: mongo-portal
+    app.kubernetes.io/part-of: mongo-portal
+  name: mongo-portal
+spec:
+  port:
+    targetPort: https
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: reencrypt
+  to:
+    kind: Service
+    name: mongo-portal
+    weight: 100
+  wildcardPolicy: None

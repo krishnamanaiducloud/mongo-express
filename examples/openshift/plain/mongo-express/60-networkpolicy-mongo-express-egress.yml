@@ -1,0 +1,44 @@
+# Generated from examples/openshift/mongo-express/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-express/
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: mongo-express
+    app.kubernetes.io/part-of: mongo-express
+  name: mongo-express-egress
+spec:
+  egress:
+  - ports:
+    - port: 5353
+      protocol: UDP
+    - port: 5353
+      protocol: TCP
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshift-dns
+  - ports:
+    - port: 27017
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: REPLACE-mongodb-namespace
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: REPLACE-mongodb-pod-label
+  - ports:
+    - port: 6443
+      protocol: TCP
+    - port: 443
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mongo-express
+  policyTypes:
+  - Egress

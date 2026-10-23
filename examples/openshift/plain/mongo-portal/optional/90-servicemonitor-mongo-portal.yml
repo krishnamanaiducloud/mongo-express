@@ -1,0 +1,15 @@
+# Generated from examples/openshift/mongo-portal/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-portal/
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mongo-portal
+spec:
+  endpoints:
+  - interval: 30s
+    path: /metrics
+    port: metrics
+    scheme: http
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongo-portal

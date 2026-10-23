@@ -1,0 +1,20 @@
+# Generated from examples/openshift/mongo-express/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-express/
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: mongo-express-tls
+  labels:
+    app.kubernetes.io/name: mongo-express
+    app.kubernetes.io/part-of: mongo-express
+  name: mongo-express
+spec:
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: https
+  selector:
+    app.kubernetes.io/name: mongo-express
+  type: ClusterIP

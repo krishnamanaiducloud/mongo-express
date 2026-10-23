@@ -15,8 +15,12 @@ examples/openshift/
 ├── mongo-express/      The mongo-express web admin (shared MongoDB connection)
 │   ├── base/           same building blocks
 │   └── overlays/       dev, prod
-└── argocd/             AppProjects + Applications (prod syncs manually)
+├── argocd/             AppProjects + Applications (prod syncs manually)
+└── plain/              The same prod resources as plain YAML files (no Kustomize), like examples/kubernetes
 ```
+
+No Kustomize? Use [`plain/`](plain/README.md): one file per resource, applied
+with `oc apply -n <namespace> -f examples/openshift/plain/<app>/`.
 
 ## What both applications provide
 

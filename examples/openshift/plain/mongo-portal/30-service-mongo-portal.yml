@@ -1,0 +1,24 @@
+# Generated from examples/openshift/mongo-portal/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-portal/
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: mongo-portal-tls
+  labels:
+    app.kubernetes.io/name: mongo-portal
+    app.kubernetes.io/part-of: mongo-portal
+  name: mongo-portal
+spec:
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: https
+  - name: metrics
+    port: 9090
+    protocol: TCP
+    targetPort: metrics
+  selector:
+    app.kubernetes.io/name: mongo-portal
+  type: ClusterIP

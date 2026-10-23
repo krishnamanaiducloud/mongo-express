@@ -114,6 +114,12 @@ jobs:
           "$(go env GOPATH)/bin/kubeconform" -strict -summary \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             argocd/*.yaml
+          # Plain (non-Kustomize) manifests
+          "$(go env GOPATH)/bin/kubeconform" -strict -summary -kubernetes-version 1.31.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/melmorabity/openshift-json-schemas/main/v4.18-standalone-strict/{{.ResourceKind}}{{.KindSuffix}}.json' \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            $(find plain -name '*.yml')
       - name: Guardrails (no MongoDB workloads, no fixed UIDs, no privileged, no cluster RBAC from apps)
         run: |
           ! grep -nE '^kind: (StatefulSet|PersistentVolumeClaim|Secret)$' /tmp/rendered/*.yaml

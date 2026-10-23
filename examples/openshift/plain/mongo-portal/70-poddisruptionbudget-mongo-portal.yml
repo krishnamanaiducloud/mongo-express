@@ -1,0 +1,14 @@
+# Generated from examples/openshift/mongo-portal/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-portal/
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/name: mongo-portal
+    app.kubernetes.io/part-of: mongo-portal
+  name: mongo-portal
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongo-portal

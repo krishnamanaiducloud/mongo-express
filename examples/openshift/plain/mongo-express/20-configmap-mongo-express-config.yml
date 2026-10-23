@@ -1,0 +1,22 @@
+# Generated from examples/openshift/mongo-express/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-express/
+apiVersion: v1
+data:
+  ME_CONFIG_BASICAUTH_ENABLED: "true"
+  ME_CONFIG_HEALTH_CHECK_PATH: /status
+  ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+  ME_CONFIG_MONGODB_TLS_ALLOW_CERTS: "false"
+  ME_CONFIG_OPENSHIFT_OAUTH: auto
+  ME_CONFIG_OPTIONS_CONFIRM_DELETE: "true"
+  ME_CONFIG_RBAC_DEFAULT_ROLE: role:readonly
+  ME_CONFIG_RBAC_LOCAL_ROLE: role:admin
+  ME_CONFIG_RBAC_POLICY_DIR: /etc/mongo-express/rbac
+  ME_CONFIG_SITE_SSL_CRT_PATH: /etc/tls/private/tls.crt
+  ME_CONFIG_SITE_SSL_ENABLED: "true"
+  ME_CONFIG_SITE_SSL_KEY_PATH: /etc/tls/private/tls.key
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/name: mongo-express
+    app.kubernetes.io/part-of: mongo-express
+  name: mongo-express-config

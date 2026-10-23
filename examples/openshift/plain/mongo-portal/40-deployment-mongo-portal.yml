@@ -1,0 +1,141 @@
+# Generated from examples/openshift/mongo-portal/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-portal/
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: mongo-portal
+    app.kubernetes.io/part-of: mongo-portal
+  name: mongo-portal
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongo-portal
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        openshift.io/required-scc: mongo-portal-restricted
+      labels:
+        app.kubernetes.io/name: mongo-portal
+        app.kubernetes.io/part-of: mongo-portal
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - args:
+        - --config=/etc/mongo-portal/config/config.yaml
+        env:
+        - name: PORTAL_SESSION_KEY_FILE
+          value: /etc/mongo-portal/session/session-key
+        - name: GOMEMLIMIT
+          value: 450MiB
+        image: docker.io/mohankrishna999/mongo-express@sha256:92c5cf140e3106ead1e53bf0372fd7b98000786af7a63a3574139a565ffc78f6
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          periodSeconds: 20
+          timeoutSeconds: 3
+        name: portal
+        ports:
+        - containerPort: 8443
+          name: https
+          protocol: TCP
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: metrics
+          periodSeconds: 5
+          timeoutSeconds: 2
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthz
+            port: metrics
+          periodSeconds: 2
+        volumeMounts:
+        - mountPath: /etc/mongo-portal/config
+          name: config
+          readOnly: true
+        - mountPath: /etc/mongo-portal/rbac
+          name: rbac
+          readOnly: true
+        - mountPath: /etc/mongo-portal/session
+          name: session-key
+          readOnly: true
+        - mountPath: /etc/tls/private
+          name: serving-cert
+          readOnly: true
+        - mountPath: /etc/mongo-portal/mongodb-ca
+          name: mongodb-ca
+          readOnly: true
+        - mountPath: /etc/mongo-portal/mongodb-client
+          name: mongodb-client-cert
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: mongo-portal
+      terminationGracePeriodSeconds: 45
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: mongo-portal
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+      volumes:
+      - configMap:
+          name: mongo-portal-config
+        name: config
+      - configMap:
+          name: mongo-portal-rbac
+          optional: true
+        name: rbac
+      - name: serving-cert
+        secret:
+          secretName: mongo-portal-tls
+      - name: session-key
+        secret:
+          optional: true
+          secretName: mongo-portal-session
+      - configMap:
+          name: mongo-portal-mongodb-ca
+          optional: true
+        name: mongodb-ca
+      - name: mongodb-client-cert
+        secret:
+          optional: true
+          secretName: mongo-portal-mongodb-client
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+        name: tmp

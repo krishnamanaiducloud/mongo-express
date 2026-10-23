@@ -1,0 +1,15 @@
+# Generated from examples/openshift/mongo-express/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-express/
+apiVersion: v1
+data:
+  policy.csv: |
+    g, mongo-express-admins-prod, role:admin
+    g, mongo-express-editors-prod, role:editor
+    g, mongo-express-viewers-prod, role:readonly
+  policy.default: role:readonly
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/name: mongo-express
+    app.kubernetes.io/part-of: mongo-express
+  name: mongo-express-rbac

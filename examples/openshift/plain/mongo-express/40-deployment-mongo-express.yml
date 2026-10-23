@@ -1,0 +1,115 @@
+# Generated from examples/openshift/mongo-express/overlays/prod (plain YAML, no Kustomize).
+# Apply with: oc apply -n <namespace> -f examples/openshift/plain/mongo-express/
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: mongo-express
+    app.kubernetes.io/part-of: mongo-express
+  name: mongo-express
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongo-express
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        openshift.io/required-scc: mongo-express-restricted
+      labels:
+        app.kubernetes.io/name: mongo-express
+        app.kubernetes.io/part-of: mongo-express
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - env:
+        - name: ME_CONFIG_BASICAUTH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: username
+              name: mongo-express-basicauth
+        - name: ME_CONFIG_BASICAUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: mongo-express-basicauth
+        envFrom:
+        - configMapRef:
+            name: mongo-express-config
+        - secretRef:
+            name: mongo-express-url
+        image: docker.io/mohankrishna999/mongo-express@sha256:2d97adc4b4b196efc6d207ff5ec0adc4c1704c3b67097f960ef7a0ca1a3167a2
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 6
+          periodSeconds: 20
+          tcpSocket:
+            port: https
+          timeoutSeconds: 3
+        name: mongo-express
+        ports:
+        - containerPort: 8081
+          name: https
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /status
+            port: https
+            scheme: HTTPS
+          periodSeconds: 10
+          timeoutSeconds: 3
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+        startupProbe:
+          failureThreshold: 12
+          httpGet:
+            path: /status
+            port: https
+            scheme: HTTPS
+          periodSeconds: 5
+        volumeMounts:
+        - mountPath: /etc/tls/private
+          name: serving-cert
+          readOnly: true
+        - mountPath: /etc/mongo-express/rbac
+          name: rbac
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: mongo-express
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: serving-cert
+        secret:
+          secretName: mongo-express-tls
+      - configMap:
+          name: mongo-express-rbac
+          optional: true
+        name: rbac
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+        name: tmp
