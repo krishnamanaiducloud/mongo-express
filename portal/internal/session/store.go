@@ -47,9 +47,11 @@ type Session struct {
 	TLS        bool
 	Client     *mongo.Client
 	Status     *mongoconn.ConnectionStatus
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	UserAgent  string
+	// Pool counts this session's MongoDB connections (monitoring page).
+	Pool      *mongoconn.PoolStats
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	UserAgent string
 
 	mu       sync.Mutex
 	lastSeen time.Time

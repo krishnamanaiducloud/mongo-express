@@ -66,7 +66,8 @@ Browser ↔ OpenShift OAuth server (user sign-in at the IdP).
 6. The debug image contains a shell and network tools; restrict its use to
    troubleshooting windows.
 7. Without SSO (or with `defaultRole` set), anyone who reaches the Route and holds valid
-   MongoDB credentials gets the default role. MongoDB authentication remains
+   MongoDB credentials gets the default role (`role:mongodb`: their own MongoDB
+   privileges, nothing more). MongoDB authentication remains
    required; set `identity.requireSSO: true` and/or `rbac.defaultRole: ""` for a
    deny-by-default posture.
 8. The shell sandbox page needs `'unsafe-eval'` to evaluate JavaScript. It is

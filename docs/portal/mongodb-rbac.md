@@ -1,9 +1,10 @@
 # MongoDB RBAC setup
 
 The portal never uses a shared MongoDB account. Each person needs their own
-MongoDB user; the portal can never exceed what that user is granted. Portal
-roles add a second, independent cap: developers are read-only even if their
-MongoDB user could write.
+MongoDB user; the portal can never exceed what that user is granted. By default
+(`role:mongodb`) the portal follows these MongoDB privileges exactly: a user
+with `readWrite` can edit, a user with `read` cannot. Portal roles such as
+`role:readonly` can add a second, independent cap ([rbac.md](rbac.md)).
 
 Run these with an existing administrator account (for example with `mongosh`
 from the debug image or a MongoDB pod). Use `passwordPrompt()` so passwords do

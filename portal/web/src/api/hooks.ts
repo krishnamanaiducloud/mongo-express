@@ -8,6 +8,7 @@ import type {
   DocumentsResponse,
   EJSONDocument,
   Me,
+  MonitoringInfo,
   PermissionsInfo,
   Profile,
   QueryRequest,
@@ -29,6 +30,7 @@ export const keys = {
   documents: (db: string, coll: string) => ['documents', db, coll] as const,
   indexes: (db: string, coll: string) => ['indexes', db, coll] as const,
   server: ['server'] as const,
+  monitoring: ['monitoring'] as const,
   audit: (scope: string) => ['audit', scope] as const,
   status: ['status'] as const,
   permissions: ['permissions'] as const,
@@ -120,7 +122,7 @@ export function useTerminateSession() {
 export function useDatabases() {
   return useQuery({
     queryKey: keys.databases,
-    queryFn: () => api<{ databases: DatabaseInfo[]; source: string }>('/databases'),
+    queryFn: () => api<{ databases: DatabaseInfo[]; source: string; totalSize?: number; visibleSize?: number }>('/databases'),
   });
 }
 
@@ -307,6 +309,17 @@ export function useServerInfo() {
   return useQuery({
     queryKey: keys.server,
     queryFn: () => api<{ server: Record<string, unknown>; tls: boolean; profile: string }>('/server'),
+  });
+}
+
+/** Live monitoring; polls while the page is visible. */
+export function useMonitoring(intervalMs: number | false) {
+  return useQuery({
+    queryKey: keys.monitoring,
+    queryFn: () => api<MonitoringInfo>('/monitoring'),
+    refetchInterval: intervalMs,
+    refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
   });
 }
 

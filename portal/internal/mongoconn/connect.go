@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -45,6 +46,29 @@ type ConnectResult struct {
 type PoolHooks struct {
 	Created func()
 	Closed  func()
+	// Stats, if set, tracks open and in-use connections of this client.
+	Stats *PoolStats
+}
+
+// PoolStats counts the connections of one MongoDB client (one session).
+type PoolStats struct {
+	open, inUse atomic.Int64
+}
+
+// PoolSnapshot is a point-in-time view of a client's connection pool.
+type PoolSnapshot struct {
+	Open  int64 `json:"open"`
+	InUse int64 `json:"inUse"`
+	Idle  int64 `json:"idle"`
+}
+
+// Snapshot returns the current counts.
+func (p *PoolStats) Snapshot() PoolSnapshot {
+	if p == nil {
+		return PoolSnapshot{}
+	}
+	open, inUse := max(p.open.Load(), 0), max(p.inUse.Load(), 0)
+	return PoolSnapshot{Open: open, InUse: min(inUse, open), Idle: max(open-inUse, 0)}
 }
 
 // Validate checks user supplied credential fields.
@@ -159,16 +183,31 @@ func ClientOptions(p *config.Profile, hooks PoolHooks) (*options.ClientOptions, 
 		return nil, fmt.Errorf("tls.mode %q is invalid", p.TLS.Mode)
 	}
 
-	if hooks.Created != nil || hooks.Closed != nil {
+	if hooks.Created != nil || hooks.Closed != nil || hooks.Stats != nil {
+		st := hooks.Stats
 		opts.SetPoolMonitor(&event.PoolMonitor{Event: func(e *event.PoolEvent) {
 			switch e.Type {
 			case event.ConnectionCreated:
 				if hooks.Created != nil {
 					hooks.Created()
 				}
+				if st != nil {
+					st.open.Add(1)
+				}
 			case event.ConnectionClosed:
 				if hooks.Closed != nil {
 					hooks.Closed()
+				}
+				if st != nil {
+					st.open.Add(-1)
+				}
+			case event.ConnectionCheckedOut:
+				if st != nil {
+					st.inUse.Add(1)
+				}
+			case event.ConnectionCheckedIn:
+				if st != nil {
+					st.inUse.Add(-1)
 				}
 			}
 		}})

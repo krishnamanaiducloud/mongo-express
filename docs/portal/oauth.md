@@ -76,7 +76,7 @@ like Argo CD's `argocd-rbac-cm`:
 
 ```csv
 g, mongo-portal-sre-prod, role:admin
-g, mongo-portal-developers-prod, role:readonly
+g, mongo-portal-developers-prod, role:mongodb    # their MongoDB privileges decide
 ```
 
 ```bash

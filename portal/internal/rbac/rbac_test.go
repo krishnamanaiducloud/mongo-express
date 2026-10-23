@@ -70,6 +70,23 @@ func TestDefaultRoleAndInheritance(t *testing.T) {
 	}
 }
 
+// The default role is only for unmapped users: a mapping restricts.
+func TestDefaultRoleOnlyForUnmappedUsers(t *testing.T) {
+	p := mustParse(t, "g, devs, role:readonly\n", RoleMongoDB)
+	if !p.Allowed([]string{"stranger"}, Documents, Delete, "app/x") {
+		t.Error("unmapped users follow their MongoDB privileges")
+	}
+	if p.Allowed([]string{"stranger"}, Audit, Get, "all") {
+		t.Error("role:mongodb must not grant other users' audit events")
+	}
+	if p.Allowed([]string{"alice", "devs"}, Documents, Delete, "app/x") {
+		t.Error("a mapped read-only group must not inherit the default role")
+	}
+	if got := p.Roles([]string{"alice", "devs"}); !slices.Equal(got, []string{RoleReadOnly}) {
+		t.Errorf("mapped roles: %v", got)
+	}
+}
+
 func TestNamespaceScopedRulesAndDeny(t *testing.T) {
 	p := mustParse(t, `
 p, role:orders-rw, documents, *, app/orders*, allow

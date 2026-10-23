@@ -240,3 +240,111 @@ export interface StatusInfo {
   shell?: boolean;
   sessions?: { active: number; max: number };
 }
+
+/** One independently collected monitoring section. */
+export interface MonSection<T> {
+  data?: T;
+  error?: string;
+  code?: string;
+}
+
+export interface MonServer {
+  host: string;
+  version: string;
+  process: string;
+  uptimeSeconds: number;
+  storageEngine: string;
+  connections: { current: number; available: number; active: number; totalCreated: number; rejected: number; exhaustHello: number; awaitingTopologyChanges: number };
+  network: { bytesIn: number; bytesOut: number; numRequests: number };
+  opcounters: Record<'insert' | 'query' | 'update' | 'delete' | 'getmore' | 'command', number>;
+  memoryMB: { resident: number; virtual: number };
+  cache: { bytesInCache: number; maxBytes: number; dirtyBytes: number };
+  activeClients: { readers: number; writers: number; total: number };
+  queue: { readers: number; writers: number; total: number };
+  asserts: Record<'regular' | 'warning' | 'msg' | 'user' | 'rollovers', number>;
+  transactions: { currentActive: number; currentOpen: number; totalCommitted: number; totalAborted: number };
+}
+
+export interface MonHost {
+  hostname: string;
+  cpuArch: string;
+  numCores: number;
+  memSizeMB: number;
+  memLimitMB: number;
+  os: string;
+}
+
+export interface MonMember {
+  name: string;
+  state: string;
+  health: number;
+  uptimeSeconds: number;
+  pingMs: number;
+  self: boolean;
+  syncSource: string;
+  lastHeartbeatMessage: string;
+  optimeDate?: string;
+  lagSeconds?: number;
+  priority?: number;
+  votes?: number;
+  hidden?: boolean;
+  arbiterOnly?: boolean;
+}
+
+export interface MonReplicaSet {
+  standalone?: boolean;
+  set?: string;
+  term?: number;
+  members?: MonMember[];
+}
+
+export interface MonDatabases {
+  totalSize: number;
+  visibleSize: number;
+  databases: DatabaseInfo[];
+}
+
+export interface MonClientGroup {
+  client: string;
+  appName: string;
+  user: string;
+  total: number;
+  active: number;
+  idle: number;
+}
+
+export interface MonOperation {
+  opid: unknown;
+  op: string;
+  ns: string;
+  secsRunning: number;
+  client: string;
+  appName: string;
+  user: string;
+  waitingForLock: boolean;
+  planSummary?: string;
+}
+
+export interface MonConnections {
+  total: number;
+  active: number;
+  idle: number;
+  internalThreads: number;
+  clientGroups: number;
+  byClient: MonClientGroup[];
+  operations: MonOperation[];
+}
+
+export interface MonitoringInfo {
+  collectedAt: string;
+  profile: string;
+  tls: boolean;
+  session: { pool: { open: number; inUse: number; idle: number }; maxPoolSize: number };
+  sections: {
+    server?: MonSection<MonServer>;
+    host?: MonSection<MonHost>;
+    replicaSet?: MonSection<MonReplicaSet>;
+    databases?: MonSection<MonDatabases>;
+    connections?: MonSection<MonConnections>;
+  };
+}

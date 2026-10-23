@@ -245,7 +245,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 		return
 	}
 
+	pool := &mongoconn.PoolStats{}
 	res, err := s.Connect(ctx, p, cred, mongoconn.PoolHooks{
+		Stats: pool,
 		Created: func() {
 			s.Metrics.MongoConns.Inc()
 			s.Metrics.MongoConnEvents.WithLabelValues("created").Inc()
@@ -275,7 +277,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, rc *reqCtx)
 	sess := &session.Session{
 		Owner: principal.Key(), Principal: principal, Profile: p.Name,
 		MongoUser: cred.Username, AuthSource: cred.AuthSource, Mechanism: res.Mechanism,
-		TLS: res.TLSEnabled, Client: res.Client, Status: res.Status, UserAgent: truncateUA(r.UserAgent()),
+		TLS: res.TLSEnabled, Client: res.Client, Status: res.Status, Pool: pool, UserAgent: truncateUA(r.UserAgent()),
 	}
 	secret, err := s.Store.Create(sess, rc.secret)
 	if err != nil {

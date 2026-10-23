@@ -39,6 +39,7 @@ Creating a database means creating its first collection (`collections:create`).
 
 | Role | Grants |
 | --- | --- |
+| `role:mongodb` | Everything MongoDB allows the user: the portal adds no limit of its own (other users' audit events excepted). The shipped default role |
 | `role:readonly` | Browse and query everything; use the shell; see own audit events |
 | `role:editor` | readonly, plus document changes, index changes and creating collections |
 | `role:admin` | Everything, including dropping collections and databases and seeing all audit events |
@@ -47,11 +48,21 @@ Policies may add rules to the built-in roles or define their own.
 
 ## Default role
 
-`policy.default` (or `rbac.defaultRole`) is granted to everyone who signs in.
-The shipped default is `role:readonly`: every user still needs valid MongoDB
-credentials, and MongoDB enforces their privileges. Set it to an empty value to
-grant nothing unless the policy maps the user. Users with no role see an
-explanatory "No portal access" page.
+`policy.default` (or `rbac.defaultRole`) is the role of users **the policy does
+not map**. A user matched by any `g` line gets only the mapped roles, so mapping a
+group to `role:readonly` really restricts it.
+
+The shipped default is `role:mongodb`: unmapped users can do exactly what their
+MongoDB user may do. A MongoDB user with `readWrite` can edit documents, and one
+with only `read` is refused by MongoDB. Every user still needs valid MongoDB
+credentials.
+
+Other choices:
+
+* `role:readonly`: every unmapped user is read-only in the portal, whatever their
+  MongoDB privileges (the behaviour of releases before 0.4.0);
+* an empty value: unmapped users get nothing and see an explanatory "No portal
+  access" page.
 
 ## Where the policy comes from
 
@@ -73,7 +84,8 @@ configuration policy applies.
 ```csv
 # Teams by OpenShift group
 g, mongo-portal-sre-prod, role:admin
-g, mongo-portal-developers-prod, role:readonly
+g, mongo-portal-developers-prod, role:mongodb   # follow their MongoDB privileges
+g, mongo-portal-auditors-prod, role:readonly    # read-only even with MongoDB write access
 
 # The payments team may change orders, but never delete the archive
 p, role:payments, documents, *, shop/orders*, allow

@@ -5,9 +5,13 @@
 #   p, <role>, <resource>, <action>, <object>[, allow|deny]
 #   g, <user or group>, <role>
 #
-# Built-in roles: role:readonly (browse, query, shell without writes),
-# role:editor (+ document/index changes, create collections),
-# role:admin (everything). Objects: "<db>" or "<db>/<collection>", '*' glob.
+# Built-in roles:
+#   role:mongodb   follow the user's MongoDB privileges (MongoDB decides)
+#   role:readonly  browse, query, shell without writes
+#   role:editor    + document/index changes, create collections
+#   role:admin     everything, incl. other users' audit events
+# Objects: "<db>" or "<db>/<collection>", '*' glob. A user mapped by a "g"
+# line gets exactly the mapped roles; unmapped users get policy.default.
 # MongoDB still checks every operation with the user's own MongoDB account,
 # so the portal can only narrow access. Full reference: docs/portal/rbac.md
 apiVersion: v1
@@ -17,12 +21,14 @@ metadata:
   labels:
     app.kubernetes.io/name: mongo-portal
 data:
-  # Role of every signed-in user the policy does not map ("" grants nothing).
-  policy.default: role:readonly
+  # Role of signed-in users no "g" line maps. role:mongodb = whatever their
+  # MongoDB user may do. Use role:readonly to cap them, "" to deny.
+  policy.default: role:mongodb
   policy.csv: |
     # OpenShift groups (oc get groups)
     g, REPLACE-sre-group, role:admin
-    g, REPLACE-developer-group, role:readonly
+    # Developers follow their MongoDB privileges; use role:readonly to cap them.
+    g, REPLACE-developer-group, role:mongodb
 
     # Used while OpenShift login is unavailable (MongoDB-only sign-in):
     # g, mongodb:REPLACE-sre-mongodb-user@admin, role:admin

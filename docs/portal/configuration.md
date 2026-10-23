@@ -56,7 +56,7 @@ Argo CD-style portal RBAC; see [rbac.md](rbac.md).
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `defaultRole` | `role:readonly` | Granted to every signed-in user (SSO or MongoDB-only). `""` grants nothing. |
+| `defaultRole` | `role:mongodb` | Role of signed-in users the policy does not map (SSO or MongoDB-only). `role:mongodb` follows each user's MongoDB privileges; `role:readonly` makes them read-only; `""` grants nothing. |
 | `policy` | — | Inline CSV (`p` and `g` lines). Invalid lines stop startup. |
 | `policyDir` | `/etc/mongo-portal/rbac` | Optional directory with `policy.csv` and `policy.default` (the `mongo-portal-rbac` ConfigMap). Missing is fine. |
 | `reloadInterval` | `30s` | How often `policyDir` is re-read. Invalid updates are rejected; the previous policy stays active. |

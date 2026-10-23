@@ -1,17 +1,18 @@
 import type { ReactNode } from 'react';
 import { Label, LabelGroup, Tooltip } from '@patternfly/react-core';
-import { EyeIcon, PencilAltIcon, UserShieldIcon, UsersIcon } from '@patternfly/react-icons';
+import { DatabaseIcon, EyeIcon, PencilAltIcon, UserShieldIcon, UsersIcon } from '@patternfly/react-icons';
 import type { Access, PortalAccess } from '../api/types';
 
-const builtinRoleText: Record<string, { label: string; color: 'purple' | 'orange' | 'blue'; help: string }> = {
+const builtinRoleText: Record<string, { label: string; color: 'purple' | 'orange' | 'blue' | 'teal'; help: string }> = {
   'role:admin': { label: 'Admin', color: 'purple', help: 'role:admin — everything the portal offers, up to your MongoDB privileges' },
   'role:editor': { label: 'Editor', color: 'orange', help: 'role:editor — read, plus document and index changes and creating collections' },
   'role:readonly': { label: 'Read-only', color: 'blue', help: 'role:readonly — browse, query and use the shell without writes' },
+  'role:mongodb': { label: 'MongoDB roles', color: 'teal', help: 'role:mongodb — follows your MongoDB privileges: what MongoDB allows, the portal allows' },
 };
 
 /** The highest built-in role among roles, used for compact labels. */
 export function primaryRole(roles: string[]): string | undefined {
-  return ['role:admin', 'role:editor', 'role:readonly'].find((r) => roles.includes(r)) ?? roles[0];
+  return ['role:admin', 'role:mongodb', 'role:editor', 'role:readonly'].find((r) => roles.includes(r)) ?? roles[0];
 }
 
 /** Portal RBAC roles of the current user. */
@@ -31,7 +32,7 @@ export function RolesLabel({ roles, compact }: { roles: string[]; compact?: bool
     const others = roles.filter((r) => r !== main && !builtinRoleText[r]);
     return (
       <Tooltip content={`Portal roles: ${roles.join(', ')}`}>
-        <Label color={known?.color ?? 'grey'} icon={main === 'role:admin' ? <UserShieldIcon /> : main === 'role:readonly' ? <EyeIcon /> : <UsersIcon />}>
+        <Label color={known?.color ?? 'grey'} icon={main === 'role:admin' ? <UserShieldIcon /> : main === 'role:readonly' ? <EyeIcon /> : main === 'role:mongodb' ? <DatabaseIcon /> : <UsersIcon />}>
           {known?.label ?? main.replace(/^role:/, '')}
           {others.length > 0 ? ` +${others.length}` : ''}
         </Label>

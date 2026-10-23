@@ -188,6 +188,36 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/OK" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /monitoring:
+    get:
+      tags: [databases]
+      summary: Deployment monitoring (server status, replica set, connections, operations, sizes, own pool)
+      description: |
+        Collected with the user's own MongoDB session. Each section is independent and
+        reports an error (for example when the MongoDB user lacks clusterMonitor)
+        instead of failing the request. No query texts or documents are returned.
+      responses:
+        "200":
+          description: Monitoring snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collectedAt: { type: string, format: date-time }
+                  profile: { type: string }
+                  tls: { type: boolean }
+                  session: { type: object, properties: { pool: { type: object }, maxPoolSize: { type: integer } } }
+                  sections:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        data: { type: object }
+                        error: { type: string }
+                        code: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /databases:
     get:
       tags: [databases]

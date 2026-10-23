@@ -194,7 +194,17 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request, rc 
 	if out == nil {
 		out = []dbView{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"databases": out, "source": source})
+	resp := map[string]any{"databases": out, "source": source}
+	if source == "listDatabases" {
+		// Size of the whole deployment as reported by MongoDB, and of the
+		// databases this user may see.
+		var visible int64
+		for _, d := range out {
+			visible += d.SizeOnDisk
+		}
+		resp["totalSize"], resp["visibleSize"] = res.TotalSize, visible
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleDatabaseStats(w http.ResponseWriter, r *http.Request, rc *reqCtx) {

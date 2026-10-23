@@ -67,6 +67,10 @@ const (
 	RoleReadOnly = "role:readonly"
 	RoleEditor   = "role:editor"
 	RoleAdmin    = "role:admin"
+	// RoleMongoDB follows the user's MongoDB privileges: the portal offers
+	// every data operation and MongoDB decides. It differs from role:admin
+	// only in portal-level permissions (other users' audit events).
+	RoleMongoDB = "role:mongodb"
 )
 
 // BuiltinPolicy defines the built-in roles. Policies may add rules to them
@@ -89,6 +93,14 @@ p, role:editor, indexes, delete, *, allow
 p, role:editor, collections, create, *, allow
 
 p, role:admin, *, *, *, allow
+
+p, role:mongodb, databases, *, *, allow
+p, role:mongodb, collections, *, *, allow
+p, role:mongodb, documents, *, *, allow
+p, role:mongodb, indexes, *, *, allow
+p, role:mongodb, shell, *, *, allow
+p, role:mongodb, server, get, *, allow
+p, role:mongodb, audit, get, self, allow
 `
 
 // Rule is one "p" line.
@@ -108,7 +120,7 @@ type Policy struct {
 }
 
 // Parse builds a policy from the built-in roles followed by csv.
-// defaultRole is granted to every authenticated principal; "" grants nothing.
+// defaultRole applies to principals no "g" line maps; "" grants nothing.
 func Parse(csv, defaultRole string) (*Policy, error) {
 	p := &Policy{rules: map[string][]Rule{}, grants: map[string][]string{}, defaultRole: strings.TrimSpace(defaultRole)}
 	if err := p.add(BuiltinPolicy, "built-in policy"); err != nil {
@@ -191,11 +203,12 @@ func (p *Policy) addLine(f []string) error {
 	return nil
 }
 
-// DefaultRole returns the role granted to every authenticated principal.
+// DefaultRole returns the role of principals the policy does not map.
 func (p *Policy) DefaultRole() string { return p.defaultRole }
 
-// Roles returns the roles of subjects (including inherited roles and the
-// default role), sorted.
+// Roles returns the roles of subjects, including inherited roles, sorted.
+// The default role applies only when no "g" line maps any of the subjects,
+// so mapping a group (for example to role:readonly) really restricts it.
 func (p *Policy) Roles(subjects []string) []string {
 	seen := map[string]bool{}
 	var walk func(string)
@@ -213,7 +226,7 @@ func (p *Policy) Roles(subjects []string) []string {
 			walk(r)
 		}
 	}
-	if p.defaultRole != "" {
+	if len(seen) == 0 && p.defaultRole != "" {
 		walk(p.defaultRole)
 	}
 	out := make([]string, 0, len(seen))

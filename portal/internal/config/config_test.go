@@ -76,7 +76,7 @@ func TestIdentityDefaultsArePassive(t *testing.T) {
 	if c.Identity.OpenShift.Enabled != EnabledAuto || c.Identity.RequireSSO || c.Identity.Header.Enabled {
 		t.Fatalf("identity defaults: %+v", c.Identity)
 	}
-	if *c.RBAC.DefaultRole != "role:readonly" || c.RBAC.PolicyDir == "" {
+	if *c.RBAC.DefaultRole != "role:mongodb" || c.RBAC.PolicyDir == "" {
 		t.Fatalf("rbac defaults: %+v", c.RBAC)
 	}
 	// Deprecated mode: header maps onto the header source and disables auto OpenShift.

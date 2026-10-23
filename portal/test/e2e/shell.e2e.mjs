@@ -214,7 +214,12 @@ try {
 
   const ro = await session(null, '', 'reader', PW.reader);
   out = await run(ro.page, 'db.orders.insertOne({ x: 1 })');
-  check(/read-only|not permitted|does not allow|PortalPolicyError/i.test(out), `unmapped MongoDB user gets the default read-only role: ${out.slice(-80)}`);
+  // Unmapped users get role:mongodb: the portal defers to MongoDB, which refuses the read-only user's write.
+  check(/not authorized|Unauthorized/i.test(out) && !/PortalPolicyError/.test(out), `unmapped MongoDB user follows MongoDB privileges: ${out.slice(-80)}`);
+  await ro.page.goto(`${BASE}/monitoring`);
+  await ro.page.waitForSelector('text=Data on disk', { timeout: 30000 });
+  check(await ro.page.isVisible('text=Topology'), 'monitoring page renders for a user without clusterMonitor');
+  check(!(await ro.page.isVisible('.pf-v6-c-alert.pf-m-danger')), 'monitoring degrades without errors');
   await ro.ctx.close();
 } catch (e) {
   bad(`unexpected error: ${e.message}`);

@@ -54,6 +54,24 @@ export function DatabasesPage({ me }: { me: Me }) {
           )}
         </ToolbarContent>
       </Toolbar>
+      {dbs.data && dbs.data.source !== 'privileges' && dbs.data.totalSize !== undefined && (
+        <div className="portal-db-summary" aria-label="Storage summary">
+          <span>
+            <span className="portal-muted">Total size on disk</span> <strong>{formatBytes(dbs.data.totalSize)}</strong>
+          </span>
+          <span>
+            <span className="portal-muted">Databases</span> <strong>{dbs.data.databases.length}</strong>
+          </span>
+          {dbs.data.visibleSize !== undefined && dbs.data.visibleSize < dbs.data.totalSize && (
+            <span>
+              <span className="portal-muted">Shown to you</span> <strong>{formatBytes(dbs.data.visibleSize)}</strong>
+            </span>
+          )}
+          <NavLink to="/monitoring" className="portal-small">
+            Deployment monitoring
+          </NavLink>
+        </div>
+      )}
       {dbs.isPending && <Spinner aria-label="Loading databases" />}
       {dbs.isError && <ErrorState error={dbs.error} onRetry={() => void dbs.refetch()} />}
       {dbs.data && (

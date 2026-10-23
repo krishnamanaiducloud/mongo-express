@@ -356,7 +356,7 @@ function Sidebar() {
             <NavLink to={activeDb ? `/shell?db=${encodeURIComponent(activeDb)}` : '/shell'}>Shell</NavLink>
           </NavItem>
           <NavItem icon={<ServerIcon />}>
-            <NavLink to="/server">Server</NavLink>
+            <NavLink to="/monitoring">Monitoring</NavLink>
           </NavItem>
           <NavItem icon={<ClipboardCheckIcon />}>
             <NavLink to="/permissions">My permissions</NavLink>

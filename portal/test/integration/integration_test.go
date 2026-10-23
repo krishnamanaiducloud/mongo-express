@@ -664,6 +664,77 @@ func adminClient(t *testing.T) *mongo.Client {
 // TestReplicaSetFailover steps down the primary and checks that an existing
 // user session keeps working against the newly elected primary (the driver
 // re-authenticates new connections with the in-memory credential).
+// Monitoring with a clusterMonitor user shows the replica set, connections
+// and sizes; without it, the privileged sections explain what is missing.
+func TestMonitoring(t *testing.T) {
+	p := newPortal(t, rsProfile(t))
+	mon := p.login("olga", "other", "rs", "monitor", "monitor-pw")
+	code, m := mon.do("GET", "/api/v1/monitoring", nil)
+	if code != 200 {
+		t.Fatalf("monitoring: %d %v", code, m)
+	}
+	secs := m["sections"].(map[string]any)
+	section := func(name string) map[string]any {
+		s, _ := secs[name].(map[string]any)
+		if s["error"] != nil {
+			t.Fatalf("section %s: %v", name, s)
+		}
+		d, _ := s["data"].(map[string]any)
+		return d
+	}
+	rs := section("replicaSet")
+	members, _ := rs["members"].([]any)
+	primaries := 0
+	for _, x := range members {
+		if x.(map[string]any)["state"] == "PRIMARY" {
+			primaries++
+		}
+	}
+	if rs["set"] != "rs0" || len(members) != 3 || primaries != 1 {
+		t.Fatalf("replica set: %v", rs)
+	}
+	srv := section("server")
+	if c := srv["connections"].(map[string]any); c["current"].(float64) < 1 || c["available"].(float64) < 1 {
+		t.Fatalf("server connections: %v", c)
+	}
+	conns := section("connections")
+	if conns["total"].(float64) < 1 || conns["total"].(float64) != conns["active"].(float64)+conns["idle"].(float64) {
+		t.Fatalf("connections: %v", conns)
+	}
+	if dbs := section("databases"); dbs["totalSize"].(float64) <= 0 {
+		t.Fatalf("databases: %v", dbs)
+	}
+	if pool := m["session"].(map[string]any)["pool"].(map[string]any); pool["open"].(float64) < 1 {
+		t.Fatalf("own pool: %v", pool)
+	}
+
+	// A user without clusterMonitor: privileged sections explain, the rest works.
+	rd := p.login("rita", "other", "rs", "reader", "reader-pw")
+	code, m = rd.do("GET", "/api/v1/monitoring", nil)
+	secs = m["sections"].(map[string]any)
+	srvSec := secs["server"].(map[string]any)
+	if code != 200 || srvSec["code"] != "mongo_unauthorized" || !strings.Contains(srvSec["error"].(string), "clusterMonitor") {
+		t.Fatalf("reader monitoring: %d %v", code, srvSec)
+	}
+	if dbSec := secs["databases"].(map[string]any); dbSec["error"] != nil {
+		t.Fatalf("reader databases: %v", dbSec)
+	}
+}
+
+// Unmapped users follow their MongoDB privileges (role:mongodb): the writer
+// may write without any RBAC mapping, the reader is refused by MongoDB.
+func TestDefaultRoleFollowsMongoDB(t *testing.T) {
+	p := newPortal(t, rsProfile(t))
+	w := p.login("wanda", "other", "rs", "writer", "writer-pw")
+	if code, m := w.do("POST", "/api/v1/databases/scratch/collections/rbac_default/documents", map[string]string{"document": `{"a":1}`}); code != 201 {
+		t.Fatalf("unmapped writer insert: %d %v", code, m)
+	}
+	r := p.login("rhea", "other", "rs", "reader", "reader-pw")
+	if code, m := r.do("POST", "/api/v1/databases/app/collections/orders/documents", map[string]string{"document": `{"a":1}`}); code != 403 || errCode(m) != "mongo_unauthorized" {
+		t.Fatalf("unmapped reader insert must be refused by MongoDB: %d %v", code, m)
+	}
+}
+
 func TestReplicaSetFailover(t *testing.T) {
 	p := newPortal(t, rsProfile(t))
 	sre := p.login("sam", "sres", "rs", "writer", "writer-pw")

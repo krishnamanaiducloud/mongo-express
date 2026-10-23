@@ -216,8 +216,8 @@ func TestIdentityIsOptional(t *testing.T) {
 	if m := decode(t, h.do("GET", "/api/v1/me", nil, as("alice", "sres"), fromPeer("10.9.9.9:1234"))); m["authenticated"] != false {
 		t.Fatalf("spoofed headers accepted: %v", m)
 	}
-	// A user in no mapped group gets the default role.
-	if m := decode(t, h.do("GET", "/api/v1/me", nil, as("eve", "other"))); !slices.Equal(roles(m), []string{rbac.RoleReadOnly}) {
+	// A user in no mapped group follows their MongoDB privileges.
+	if m := decode(t, h.do("GET", "/api/v1/me", nil, as("eve", "other"))); !slices.Equal(roles(m), []string{rbac.RoleMongoDB}) || !perm(m, "documents:create") || perm(m, "audit:all") {
 		t.Fatalf("default role: %v", m)
 	}
 	m = decode(t, h.do("GET", "/api/v1/me", nil, as("dana", "devs")))
@@ -233,8 +233,10 @@ func TestIdentityIsOptional(t *testing.T) {
 // Without SSO, users sign in with MongoDB credentials and RBAC applies to
 // their MongoDB identity.
 func TestMongoDBOnlyLogin(t *testing.T) {
+	readonly := rbac.RoleReadOnly
 	h := newHarness(t, func(c *config.Config) {
 		c.RBAC.Policy = "g, mongodb:u-admin@admin, role:admin\n"
+		c.RBAC.DefaultRole = &readonly
 	})
 	login := func(user string) (*http.Cookie, string) {
 		t.Helper()
@@ -387,7 +389,7 @@ func TestStatusAndPermissions(t *testing.T) {
 		t.Fatalf("anonymous permissions: %d", w.Code)
 	}
 	p := decode(t, h.do("GET", "/api/v1/permissions", nil, as("dana", "devs")))
-	if rules, _ := p["rules"].([]any); len(rules) == 0 || p["defaultRole"] != rbac.RoleReadOnly {
+	if rules, _ := p["rules"].([]any); len(rules) == 0 || p["defaultRole"] != rbac.RoleMongoDB {
 		t.Fatalf("permissions: %v", p)
 	}
 	check := func(user, groups, q string) (int, any) {
@@ -406,6 +408,31 @@ func TestStatusAndPermissions(t *testing.T) {
 		if code, _ := check("dana", "devs", q); code != 400 {
 			t.Errorf("invalid check %q: %d", q, code)
 		}
+	}
+}
+
+// Monitoring never fails as a whole: unreachable or unauthorized sections
+// report their own error.
+func TestMonitoringIsPassive(t *testing.T) {
+	h := newHarness(t, nil)
+	cookie, _ := h.login("sam", "sres")
+	w := h.do("GET", "/api/v1/monitoring", nil, as("sam", "sres"), withCookie(cookie))
+	m := decode(t, w)
+	secs, _ := m["sections"].(map[string]any)
+	if w.Code != 200 || len(secs) != 5 {
+		t.Fatalf("monitoring: %d %v", w.Code, m)
+	}
+	for name, v := range secs {
+		if sec, _ := v.(map[string]any); sec["error"] == "" || sec["error"] == nil {
+			t.Errorf("section %s should report the unreachable MongoDB: %v", name, sec)
+		}
+	}
+	sess, _ := m["session"].(map[string]any)
+	if _, ok := sess["pool"].(map[string]any); !ok {
+		t.Fatalf("session pool: %v", m)
+	}
+	if w := h.do("GET", "/api/v1/monitoring", nil, as("sam", "sres")); w.Code != 401 {
+		t.Fatalf("monitoring without a MongoDB session: %d", w.Code)
 	}
 }
 

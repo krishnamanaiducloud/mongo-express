@@ -130,9 +130,11 @@ Then browse to the Route:
 1. **Log in with OpenShift**, then MongoDB login, then databases.
 2. **System status** shows OpenShift sign-in *Available*, the RBAC policy from
    the ConfigMap, and the MongoDB deployments *Online*.
-3. **My permissions** shows the expected roles. A developer sees no write
-   controls, and `POST`/`DELETE` calls with a developer session return 403.
-4. Optional: block egress to the OAuth server for a moment. The button
+3. **My permissions** shows the expected roles. A developer whose MongoDB user
+   is read-only sees no write controls, and MongoDB refuses writes with 403.
+4. **Monitoring** shows the replica set members, connections and sizes (for
+   MongoDB users with `clusterMonitor`; others see what their roles allow).
+5. Optional: block egress to the OAuth server for a moment. The button
    disappears within a minute and MongoDB login keeps working.
 
 ## Debug image

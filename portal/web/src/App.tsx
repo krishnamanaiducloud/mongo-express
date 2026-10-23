@@ -13,7 +13,7 @@ import { DatabasePage } from './pages/DatabasePage';
 import { CollectionPage } from './pages/CollectionPage';
 import { SessionPage } from './pages/SessionPage';
 import { AuditPage } from './pages/AuditPage';
-import { ServerPage } from './pages/ServerPage';
+import { MonitoringPage } from './pages/MonitoringPage';
 import { ShellPage } from './pages/ShellPage';
 import { PermissionsPage } from './pages/PermissionsPage';
 import { SystemStatusPage } from './pages/SystemStatusPage';
@@ -63,7 +63,8 @@ export function App() {
           <Route path="db/:db/:coll" element={<CollectionPage />} />
           <Route path="session" element={<SessionPage me={me.data} />} />
           <Route path="audit" element={<AuditPage me={me.data} />} />
-          <Route path="server" element={<ServerPage />} />
+          <Route path="monitoring" element={<MonitoringPage />} />
+          <Route path="server" element={<Navigate to="/monitoring" replace />} />
           <Route path="shell" element={<ShellPage />} />
           <Route path="permissions" element={<PermissionsPage />} />
           <Route path="status" element={<SystemStatusPage />} />

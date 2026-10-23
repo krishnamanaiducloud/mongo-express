@@ -114,7 +114,7 @@ function PaletteDialog({ isOpen, onClose, onAction }: PaletteProps) {
     const pages: [string, string, ReactNode, string?][] = [
       ['Databases', '/', <ListIcon key="i" />],
       ['Shell', activeDb ? `/shell?db=${encodeURIComponent(activeDb)}` : '/shell', <TerminalIcon key="i" />, 'mongosh console'],
-      ['Server', '/server', <ServerIcon key="i" />, 'version replica set'],
+      ['Monitoring', '/monitoring', <ServerIcon key="i" />, 'server replica set primary secondary connections idle size metrics'],
       ['Session & security', '/session', <LockIcon key="i" />, 'sessions logout'],
       ['My permissions', '/permissions', <ClipboardCheckIcon key="i" />, 'rbac roles access policy'],
       ['System status', '/status', <TachometerAltIcon key="i" />, 'health openshift sso integrations'],

@@ -15,6 +15,7 @@ the Node.js mongo-express application at the repository root ([docs](../mongo-ex
 | [oauth.md](oauth.md) | Built-in OpenShift login (Argo CD style), passive behaviour, troubleshooting |
 | [rbac.md](rbac.md) | Argo CD-style RBAC: policy format, roles, examples, where it is enforced |
 | [mongodb-rbac.md](mongodb-rbac.md) | Creating developer and SRE MongoDB users |
+| [monitoring.md](monitoring.md) | Monitoring page: replica set members, connections (active/idle), sizes, resources; clusterMonitor |
 | [secrets.md](secrets.md) | Required Secrets and keys (no values) |
 | [gitops.md](gitops.md) | Argo CD setup, scoping, release flow |
 | [threat-model.md](threat-model.md) | Assets, threats, mitigations, residual risks |

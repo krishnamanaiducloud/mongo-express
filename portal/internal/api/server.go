@@ -181,6 +181,7 @@ func (s *Server) register() {
 	s.handle("DELETE", v+"/sessions/{handle}", levelIdentity, 0, s.handleTerminateSession)
 	s.handle("GET", v+"/audit", levelIdentity, 0, s.handleAudit)
 	s.handle("GET", v+"/server", levelSession, 0, s.handleServerInfo)
+	s.handle("GET", v+"/monitoring", levelSession, 0, s.handleMonitoring)
 
 	s.handle("GET", v+"/databases", levelSession, 0, s.handleListDatabases)
 	s.handle("GET", v+"/databases/{db}/stats", levelSession, 0, s.handleDatabaseStats)

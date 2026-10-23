@@ -5,9 +5,10 @@ kind: ConfigMap
 metadata:
   name: mongo-portal-rbac
 data:
-  policy.default: role:readonly
+  policy.default: role:mongodb
   policy.csv: |
     g, mongo-portal-sre-prod, role:admin
-    g, mongo-portal-developers-prod, role:readonly
+    # Developers follow their MongoDB privileges; use role:readonly to cap them.
+    g, mongo-portal-developers-prod, role:mongodb
     # MongoDB-only sign-ins used while OpenShift login is unavailable:
     # g, mongodb:REPLACE-sre-mongodb-user@admin, role:admin

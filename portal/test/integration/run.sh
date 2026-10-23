@@ -73,6 +73,7 @@ a.auth("root", process.env.ADMIN_PW);
 a.createUser({user:"reader", pwd:"reader-pw", roles:[{role:"read", db:"app"}], mechanisms:["SCRAM-SHA-256"]});
 a.createUser({user:"writer", pwd:"writer-pw", roles:[{role:"readWrite", db:"app"},{role:"dbAdmin", db:"app"},{role:"readWrite", db:"scratch"},{role:"dbAdmin", db:"scratch"}]});
 a.createUser({user:"legacy", pwd:"legacy-pw", roles:[{role:"read", db:"app"}], mechanisms:["SCRAM-SHA-1"]});
+a.createUser({user:"monitor", pwd:"monitor-pw", roles:[{role:"clusterMonitor", db:"admin"},{role:"read", db:"app"}]});
 db.getSiblingDB("app").createUser({user:"appuser", pwd:"appuser-pw", roles:[{role:"read", db:"app"}]});
 const app = a.getSiblingDB("app");
 app.orders.insertMany([

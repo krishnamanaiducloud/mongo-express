@@ -162,8 +162,10 @@ type DevConfig struct {
 
 // RBACConfig configures Argo CD-style portal RBAC (see package rbac).
 type RBACConfig struct {
-	// DefaultRole is granted to every signed-in user (SSO or MongoDB-only).
-	// Defaults to role:readonly; set "" to grant nothing by default.
+	// DefaultRole applies to signed-in users (SSO or MongoDB-only) whom no
+	// "g" line maps. Defaults to role:mongodb: the portal then offers what the
+	// user's MongoDB privileges allow and MongoDB decides. Set "" to grant
+	// nothing unless mapped, or role:readonly to cap unmapped users.
 	DefaultRole *string `yaml:"defaultRole"`
 	// Policy is inline CSV (p and g lines).
 	Policy string `yaml:"policy"`
@@ -394,7 +396,7 @@ func (c *Config) applyDefaults() {
 
 	rb := &c.RBAC
 	if rb.DefaultRole == nil {
-		d := "role:readonly"
+		d := "role:mongodb"
 		rb.DefaultRole = &d
 	}
 	setDefault(&rb.PolicyDir, "/etc/mongo-portal/rbac")
